@@ -747,6 +747,7 @@ async def download_track(
             query=search_q,
             expected=expected,
             album=album,
+            skip_ids=skip_vids,
         )
         yt_vid = _ext_vid(yt_url) if yt_url else ""
         if yt_url and yt_vid not in skip_vids:
@@ -762,6 +763,8 @@ async def download_track(
             ok = _accept(result, label="youtube", expected=expected)
             if ok is not None:
                 found.append(ok)
+            elif yt_vid:
+                skip_vids.add(yt_vid)
         return found
 
     await _set_pct(0)
@@ -802,6 +805,32 @@ async def download_track(
                 )
             if yt_id:
                 skip_vids.add(yt_id)
+            # Cobalt сразу по прямому URL (не ждать 40с поиска)
+            await _set_pct(50)
+            direct_urls = [query] if direct_yt else []
+            fb_early = await _external_audio_fallback(
+                tmp_dir,
+                artist=artist,
+                title=title or query,
+                expected=expected_duration,
+                prefer_urls=direct_urls,
+            )
+            if fb_early is not None:
+                ok_fb = _accept(
+                    fb_early,
+                    label="external-early",
+                    expected=expected_duration,
+                    require_title_match=False,
+                )
+                if ok_fb is not None:
+                    await _set_pct(100)
+                    return DownloadedAudio(
+                        path=ok_fb.path,
+                        title=title if (title and title != query) else (ok_fb.title or title),
+                        artist=artist or ok_fb.artist,
+                        duration=ok_fb.duration,
+                        data=b"",
+                    )
             if not direct_fallback_search:
                 raise DownloadError(
                     "Не удалось скачать этот YouTube-ролик. "
@@ -960,6 +989,18 @@ async def download_single_track(
                         ),
                     )
                 logger.warning("album-exact failed (%s) — search fallback", exc)
+                # не долбить тот же UMG videoId ещё раз
+                return await download_track(
+                    query,
+                    timeout=timeout,
+                    progress_cb=progress_cb,
+                    artist=artist,
+                    title=title,
+                    expected_duration=expected_duration,
+                    album=album,
+                    strict_duration=strict,
+                    skip_video_ids={vid},
+                )
 
     # короткий неоднозначный title без альбома → не угадываем коллаб
     t_norm = _norm_match(title)
@@ -2485,6 +2526,7 @@ async def _resolve_best_youtube(
     query: str,
     expected: Optional[int] = None,
     album: str = "",
+    skip_ids: Optional[set[str]] = None,
 ) -> str:
     """
     Ищет среди нескольких результатов YouTube лучший ролик.
@@ -2493,6 +2535,7 @@ async def _resolve_best_youtube(
     import yt_dlp  # type: ignore
 
     album = (album or "").strip()
+    banned = {v for v in (skip_ids or set()) if v}
     variants = []
     if artist and title:
         if album:
@@ -2553,7 +2596,7 @@ async def _resolve_best_youtube(
                     if not entry:
                         continue
                     vid = entry.get("id") or ""
-                    if not vid:
+                    if not vid or vid in banned:
                         continue
                     etitle = entry.get("title") or ""
                     if _JUNK_VIDEO_RE.search(etitle) and not _JUNK_VIDEO_RE.search(
@@ -2569,6 +2612,9 @@ async def _resolve_best_youtube(
                     sc = _score_youtube_entry(
                         entry, artist=artist, title=title, expected=expected
                     )
+                    # если официальный UMG-blocked — чуть поднимаем неофициальные
+                    if banned and sc >= 25:
+                        sc += 5
                     logger.debug(
                         "yt candidate %.1f %s | %s",
                         sc,
@@ -2705,8 +2751,24 @@ def _build_ytdlp_cmd(
     return cmd
 
 
+def _ytdlp_umg_blocked(joined_stderr: str) -> bool:
+    low = (joined_stderr or "").lower()
+    return any(
+        s in low
+        for s in (
+            "claimed content",
+            "blocked due to",
+            "copyright",
+            "uploader has not made",
+        )
+    )
+
+
 def _ytdlp_retryable(joined_stderr: str) -> bool:
     low = joined_stderr.lower()
+    if _ytdlp_umg_blocked(joined_stderr):
+        # UMG без прокси ≠ конец: следующий профиль с US-proxy может пройти
+        return True
     return any(
         s in low
         for s in (
@@ -2717,14 +2779,37 @@ def _ytdlp_retryable(joined_stderr: str) -> bool:
             "nsig extraction failed",
             "the page needs to be reloaded",
             "login_required",
+            "video unavailable",
         )
     )
 
 
-# Профили: web_safari + proxy/без; android без cookies (cookies android не любит).
+# Сначала US-proxy (NL VPS режет UMG). android/ios без cookies.
+# Без прокси — только в конце (часто UMG block в Европе).
 _YTDLP_PROFILES: tuple[dict[str, Any], ...] = (
     {
+        "player_clients": "android",
+        "audio_format": "bestaudio/best",
+        "extract_mp3": True,
+        "use_proxy": True,
+        "use_cookies": False,
+    },
+    {
+        "player_clients": "ios",
+        "audio_format": "bestaudio/best",
+        "extract_mp3": True,
+        "use_proxy": True,
+        "use_cookies": False,
+    },
+    {
         "player_clients": "web_safari",
+        "audio_format": "",
+        "extract_mp3": True,
+        "use_proxy": True,
+        "use_cookies": True,
+    },
+    {
+        "player_clients": "mweb,tv",
         "audio_format": "",
         "extract_mp3": True,
         "use_proxy": True,
@@ -2735,20 +2820,6 @@ _YTDLP_PROFILES: tuple[dict[str, Any], ...] = (
         "audio_format": "",
         "extract_mp3": True,
         "use_proxy": False,
-        "use_cookies": True,
-    },
-    {
-        "player_clients": "android",
-        "audio_format": "bestaudio/best",
-        "extract_mp3": True,
-        "use_proxy": True,
-        "use_cookies": False,
-    },
-    {
-        "player_clients": "mweb",
-        "audio_format": "",
-        "extract_mp3": False,
-        "use_proxy": True,
         "use_cookies": True,
     },
 )
@@ -2792,6 +2863,8 @@ async def _download_ytdlp_async(
         if result is not None:
             return result
         last_stderr = joined
+        if _ytdlp_umg_blocked(joined):
+            logger.warning("yt-dlp UMG/geo block — try next profile (proxy)")
         # подчистить обломки перед следующим профилем — меньше пик RAM
         for junk in tmp_dir.glob("*"):
             try:
@@ -2799,7 +2872,8 @@ async def _download_ytdlp_async(
                     junk.unlink(missing_ok=True)
             except OSError:
                 pass
-        if not is_yt or not _ytdlp_retryable(joined):
+        # На YouTube всегда гоняем все профили (proxy ↔ no-proxy / android ↔ web)
+        if not is_yt:
             break
 
     joined = last_stderr
@@ -3008,6 +3082,8 @@ def _finalize_file(path: Path, query: str, tmp_dir: Path) -> DownloadedAudio:
 _COBALT_APIS = (
     "https://api.cobalt.tools/",
     "https://cobalt-api.kwiatekmiki.com/",
+    "https://co.wuk.sh/",
+    "https://cobalt.api.timelessnesses.me/",
 )
 
 
@@ -3033,20 +3109,38 @@ async def _cobalt_download_url(watch_url: str) -> str:
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=40),
             ) as resp:
+                text = await resp.text()
                 if resp.status >= 400:
+                    logger.warning(
+                        "cobalt %s status=%s body=%s",
+                        api,
+                        resp.status,
+                        text[:160],
+                    )
                     continue
-                data = await resp.json(content_type=None)
+                import json as _json
+
+                try:
+                    data = _json.loads(text)
+                except Exception:
+                    logger.warning("cobalt %s bad json: %s", api, text[:160])
+                    continue
             status = (data.get("status") or "").lower()
-            if status in {"tunnel", "redirect", "stream"} and data.get("url"):
+            if status in {"tunnel", "redirect", "stream", "success"} and data.get(
+                "url"
+            ):
+                logger.info("cobalt hit %s status=%s", api, status)
                 return str(data["url"])
             if status == "picker":
                 for item in data.get("picker") or []:
                     if item.get("url") and (
                         item.get("type") in {None, "audio", "video"}
                     ):
+                        logger.info("cobalt picker %s", api)
                         return str(item["url"])
+            logger.warning("cobalt %s unexpected: %s", api, str(data)[:200])
         except Exception as exc:  # noqa: BLE001
-            logger.debug("cobalt %s: %s", api, exc)
+            logger.warning("cobalt %s: %s", api, exc)
     return ""
 
 
