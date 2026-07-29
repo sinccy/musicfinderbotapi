@@ -1,0 +1,13 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.log
+*.err
+.git/
+.idea/
+.vscode/
+.DS_Store
+playlist.db
+*.db-journal
