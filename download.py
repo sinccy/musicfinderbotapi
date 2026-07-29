@@ -458,6 +458,14 @@ def _ffmpeg_bin() -> Optional[str]:
     found = shutil.which("ffmpeg")
     if found:
         return found
+    try:
+        import imageio_ffmpeg
+
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+        if exe and Path(exe).is_file():
+            return exe
+    except Exception:  # noqa: BLE001
+        pass
     desktop = Path.home() / "Desktop" / "ffmpeg"
     if desktop.is_dir():
         for exe in desktop.rglob("ffmpeg.exe"):
