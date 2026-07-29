@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -11,6 +13,27 @@ load_dotenv()
 
 def _get(name: str, default: str = "") -> str:
     return (os.getenv(name) or default).strip()
+
+
+def _resolve_ytdlp_cookies_file() -> str:
+    """
+    Путь к cookies.txt для yt-dlp.
+    На сервере (Bothost) нет Chrome — только файл или YTDLP_COOKIES_B64.
+    """
+    path = _get("YTDLP_COOKIES_FILE") or _get("YOUTUBE_COOKIES_FILE")
+    if path and Path(path).is_file():
+        return path
+    b64 = _get("YTDLP_COOKIES_B64")
+    if not b64:
+        return path
+    target = Path("/tmp/youtube_cookies.txt")
+    try:
+        target.write_bytes(base64.b64decode(b64, validate=False))
+        if target.stat().st_size > 50:
+            return str(target)
+    except Exception:  # noqa: BLE001
+        pass
+    return path
 
 
 BOT_TOKEN = _get("BOT_TOKEN")
@@ -32,8 +55,9 @@ TELEGRAM_PROXY = (
 )
 
 # YouTube / yt-dlp (если снова «Sign in to confirm you’re not a bot»):
-# путь к cookies.txt (netscape) или браузер: chrome / safari / firefox
-YTDLP_COOKIES_FILE = _get("YTDLP_COOKIES_FILE") or _get("YOUTUBE_COOKIES_FILE")
+# Mac: YTDLP_COOKIES_FROM_BROWSER=chrome
+# Сервер: YTDLP_COOKIES_FILE=/app/cookies.txt или YTDLP_COOKIES_B64=<base64 cookies.txt>
+YTDLP_COOKIES_FILE = _resolve_ytdlp_cookies_file()
 YTDLP_COOKIES_FROM_BROWSER = (
     _get("YTDLP_COOKIES_FROM_BROWSER") or _get("YOUTUBE_COOKIES_FROM_BROWSER")
 )

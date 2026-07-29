@@ -2778,10 +2778,21 @@ async def _download_ytdlp_async(
         logger.info("yt-dlp match-filter skip (%s)", source)
         return None
     if "sign in to confirm" in joined.lower():
-        raise DownloadError(
-            "YouTube требует вход (антибот). Проверьте cookies в .env: "
-            "YTDLP_COOKIES_FROM_BROWSER=chrome"
-        )
+        if YTDLP_COOKIES_FILE and Path(YTDLP_COOKIES_FILE).is_file():
+            hint = "Cookies заданы, но YouTube всё равно блокирует — обновите cookies.txt."
+        elif YTDLP_COOKIES_FROM_BROWSER:
+            hint = (
+                "YTDLP_COOKIES_FROM_BROWSER работает только на Mac с браузером. "
+                "На сервере: экспортируйте cookies.txt и задайте "
+                "YTDLP_COOKIES_FILE=/app/cookies.txt или YTDLP_COOKIES_B64."
+            )
+        else:
+            hint = (
+                "На сервере задайте YTDLP_COOKIES_FILE=/app/cookies.txt "
+                "(файл через файловый менеджер) или YTDLP_COOKIES_B64 в env. "
+                "На Mac: YTDLP_COOKIES_FROM_BROWSER=chrome."
+            )
+        raise DownloadError(f"YouTube требует вход (антибот). {hint}")
     return None
 
 
