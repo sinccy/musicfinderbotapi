@@ -2658,19 +2658,16 @@ _MAX_YT_DURATION_SEC = 30 * 60
 def _ytdlp_download_proxy(use_proxy: bool | None) -> str:
     """
     Прокси для скачивания yt-dlp.
-    YTMUSIC_PROXY нужен для каталога; для googlevideo иногда ломает форматы —
-    поэтому профили пробуют и с прокси, и без.
+    use_proxy=True → всегда YTMUSIC_PROXY / YTDLP_PROXY (UMG в NL без US-proxy мёртв).
+    use_proxy=False → без прокси.
+    YTDLP_PROXY=none отключает только автоподстановку, не профили с use_proxy=True.
     """
-    explicit = (YTDLP_PROXY or "").strip()
-    if explicit.lower() in {"none", "off", "0", "false"}:
-        return ""
     if use_proxy is False:
         return ""
-    if explicit:
+    explicit = (YTDLP_PROXY or "").strip()
+    if explicit and explicit.lower() not in {"none", "off", "0", "false"}:
         return explicit
-    if use_proxy is True or use_proxy is None:
-        return (YTMUSIC_PROXY or "").strip()
-    return ""
+    return (YTMUSIC_PROXY or "").strip()
 
 
 def _ytdlp_auth_args(*, use_cookies: bool = True) -> list[str]:
