@@ -102,6 +102,21 @@ def _ensure_pip_ffmpeg() -> None:
     )
 
 
+def _upgrade_ytdlp() -> None:
+    """Свежий yt-dlp критичен: старый не видит аудиоформаты YouTube."""
+    logger.info("Upgrading yt-dlp…")
+    subprocess.run(
+        [sys.executable, "-m", "pip", "install", "-q", "-U", "yt-dlp"],
+        check=False,
+    )
+    try:
+        from yt_dlp.version import __version__ as ytdlp_ver  # type: ignore
+
+        logger.info("yt-dlp version=%s", ytdlp_ver)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def ensure_system_deps() -> None:
     global _bootstrapped
     if _bootstrapped:
@@ -116,6 +131,7 @@ def ensure_system_deps() -> None:
         _install_apt_packages()
     _install_node_tarball()
     _ensure_pip_ffmpeg()
+    _upgrade_ytdlp()
     logger.info(
         "Deps: ffmpeg=%s node=%s tesseract=%s",
         _which("ffmpeg") or "none",

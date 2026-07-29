@@ -314,50 +314,17 @@ async def probe_album_free_download(
         matched = sum(1 for n in names if _match_album_video_id(n, mapping))
         ratio = matched / max(len(names), 1)
         if ratio >= 0.45 or matched >= 5:
-            # карта есть, но ролики могут быть UMG-blocked — проверим 2–3 шт.
-            sample_vids: list[str] = []
-            seen_v: set[str] = set()
-            for n in names:
-                vid = _match_album_video_id(n, mapping)
-                if not vid or vid in seen_v:
-                    continue
-                seen_v.add(vid)
-                sample_vids.append(vid)
-                if len(sample_vids) >= 3:
-                    break
-            ok_n = 0
-            blocked_n = 0
-            unknown_n = 0
-            for vid in sample_vids:
-                st = await _yt_video_status(vid)
-                if st == "ok":
-                    ok_n += 1
-                elif st == "blocked":
-                    blocked_n += 1
-                else:
-                    unknown_n += 1
-            if sample_vids and blocked_n == len(sample_vids):
-                logger.info(
-                    "free download OK via YTM map (probe blocked, album on YTM) %s — %s",
-                    artist,
-                    album,
-                )
-                _FREE_AVAIL_CACHE[cache_key] = (True, time.time())
-                return True
-            elif ok_n > 0 or unknown_n > 0 or not sample_vids:
-                # bot-check ≠ закрытый контент: android-скачивание часто проходит
-                _FREE_AVAIL_CACHE[cache_key] = (True, time.time())
-                logger.info(
-                    "free download OK via YTM map %s — %s (%d/%d, ok=%d blocked=%d unknown=%d)",
-                    artist,
-                    album,
-                    matched,
-                    len(names),
-                    ok_n,
-                    blocked_n,
-                    unknown_n,
-                )
-                return True
+            # Карта альбома на YTM есть — кнопка открыта.
+            # Не гоняем yt-dlp на probe (жрёт RAM и даёт ложный format/bot).
+            _FREE_AVAIL_CACHE[cache_key] = (True, time.time())
+            logger.info(
+                "free download OK via YTM map %s — %s (%d/%d)",
+                artist,
+                album,
+                matched,
+                len(names),
+            )
+            return True
 
     # 2) сэмпл треков через SC/YT (без скачивания)
     sample_idx: list[int] = []
@@ -875,15 +842,13 @@ async def download_track(
                 data=best.data,
             )
 
-        hint = ""
-        if not _node_bin():
-            hint = "Установите Node.js (`brew install node`) для YouTube."
-        elif not YTDLP_COOKIES_FILE and not YTDLP_COOKIES_FROM_BROWSER:
-            hint = (
-                "Если ролик есть, но не качает: в .env укажите "
-                "YTDLP_COOKIES_FROM_BROWSER=safari"
-            )
-        raise_unavailable_free(artist, title, extra=hint)
+        # Ролик на YTM/YT нашёлся, но yt-dlp не смог скачать формат —
+        # это не «закрытый контент», а сервер/cookies/версия yt-dlp.
+        raise DownloadError(
+            "Не удалось скачать аудио с YouTube (формат недоступен). "
+            "Обновите cookies (YTDLP_COOKIES_B64) или пришлите ссылку на ролик. "
+            "На сервере: pip install -U yt-dlp."
+        )
     except DownloadError:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -2632,8 +2597,8 @@ def _build_ytdlp_cmd(
     search: str,
     outtmpl: str,
     *,
-    player_clients: str = "android,web",
-    audio_format: str = "bestaudio/best",
+    player_clients: str = "tv,web",
+    audio_format: str = "",
     extract_mp3: bool | None = None,
 ) -> list[str]:
     cmd = [
@@ -2660,7 +2625,9 @@ def _build_ytdlp_cmd(
         or search.startswith("ytsearch")
     )
     if is_yt:
-        cmd.extend(["-f", audio_format])
+        # пустой format = yt-dlp сам выберет (android часто отдаёт только images)
+        if audio_format:
+            cmd.extend(["-f", audio_format])
         cmd.extend(["--extractor-args", f"youtube:player_client={player_clients}"])
         cmd.extend(
             [
@@ -2692,12 +2659,12 @@ def _ytdlp_retryable(joined_stderr: str) -> bool:
     )
 
 
+# Мало профилей = меньше пиков RAM (каждый yt-dlp+node ≈ 150–250 МБ).
+# tv/web с cookies обычно отдают аудио; android часто только storyboard.
 _YTDLP_PROFILES: tuple[dict[str, Any], ...] = (
-    {"player_clients": "android,web", "audio_format": "bestaudio/best", "extract_mp3": True},
-    {"player_clients": "ios,web", "audio_format": "bestaudio/best", "extract_mp3": True},
-    {"player_clients": "mweb,web", "audio_format": "ba/b", "extract_mp3": True},
-    {"player_clients": "android,web", "audio_format": "bestaudio/best", "extract_mp3": False},
-    {"player_clients": "web", "audio_format": "bestaudio/best", "extract_mp3": False},
+    {"player_clients": "tv,web", "audio_format": "", "extract_mp3": True},
+    {"player_clients": "web,mweb", "audio_format": "bestaudio/best", "extract_mp3": True},
+    {"player_clients": "tv,mweb,web", "audio_format": "", "extract_mp3": False},
 )
 
 
@@ -2739,6 +2706,13 @@ async def _download_ytdlp_async(
         if result is not None:
             return result
         last_stderr = joined
+        # подчистить обломки перед следующим профилем — меньше пик RAM
+        for junk in tmp_dir.glob("*"):
+            try:
+                if junk.is_file():
+                    junk.unlink(missing_ok=True)
+            except OSError:
+                pass
         if not is_yt or not _ytdlp_retryable(joined):
             break
 
@@ -2916,8 +2890,8 @@ def _finalize_file(path: Path, query: str, tmp_dir: Path) -> DownloadedAudio:
     except OSError:
         pass
 
-    data = path.read_bytes()
-    if not data:
+    size = path.stat().st_size
+    if size < 1000:
         raise DownloadError("Скачанный файл пустой.")
 
     duration = _probe_duration_sec(path)
@@ -2926,21 +2900,22 @@ def _finalize_file(path: Path, query: str, tmp_dir: Path) -> DownloadedAudio:
         raise DownloadError(
             f"Скачалось слишком коротко ({duration}с) — похоже на превью, не трек."
         )
-    if len(data) < 350_000 and (duration is None or duration < 90):
+    if size < 350_000 and (duration is None or duration < 90):
         raise DownloadError("Файл слишком маленький — похоже на превью, не полный трек.")
 
     logger.info(
         "Download OK: %s (%d bytes, %ss)",
         path.name,
-        len(data),
+        size,
         duration or "?",
     )
+    # не держим весь файл в RAM — payload() читает с диска при отправке
     return DownloadedAudio(
         path=path,
         title=title or query,
         artist=artist,
         duration=duration,
-        data=data,
+        data=b"",
     )
 
 
