@@ -3912,16 +3912,31 @@ async def main() -> None:
     require_core_env()
     validate_token(config.BOT_TOKEN)
     init_playlist_db()
-    from pathlib import Path
+    import shutil
 
-    from config import YTDLP_COOKIES_FILE, YTMUSIC_PROXY
+    from config import YTMUSIC_PROXY, refresh_ytdlp_cookies, ytdlp_cookies_status
 
-    ck = YTDLP_COOKIES_FILE or ""
+    refresh_ytdlp_cookies()
+    ck = ytdlp_cookies_status()
     logger.info(
-        "yt-dlp cookies=%s proxy=%s",
-        ck if ck and Path(ck).is_file() else "none",
+        "yt-dlp cookies=%s source=%s size=%s b64_env=%s node=%s ffmpeg=%s proxy=%s",
+        ck["path"] or "none",
+        ck["source"],
+        ck["size"] or "-",
+        "yes" if ck["b64_env_set"] else "no",
+        shutil.which("node") or shutil.which("nodejs") or "none",
+        shutil.which("ffmpeg") or "none",
         "yes" if YTMUSIC_PROXY else "no",
     )
+    if ck["b64_env_set"] and not ck["path"]:
+        logger.warning(
+            "YTDLP_COOKIES_B64 задан, но cookies не созданы: %s",
+            ck["error"] or "unknown",
+        )
+    elif not ck["path"]:
+        logger.warning(
+            "YouTube cookies не заданы — скачивание может падать с антиботом"
+        )
 
     session = None
     if TELEGRAM_PROXY:

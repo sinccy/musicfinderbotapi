@@ -2593,7 +2593,7 @@ async def _resolve_best_youtube(
 
 
 def _node_bin() -> Optional[str]:
-    return shutil.which("node")
+    return shutil.which("node") or shutil.which("nodejs")
 
 
 # Telegram ~48 МБ ≈ ~25–30 мин MP3; длинные миксы не отправляются
@@ -2788,8 +2788,9 @@ async def _download_ytdlp_async(
             )
         else:
             hint = (
-                "На сервере задайте YTDLP_COOKIES_FILE=/app/cookies.txt "
-                "(файл через файловый менеджер) или YTDLP_COOKIES_B64 в env. "
+                "На сервере задайте YTDLP_COOKIES_B64 в env (base64 cookies.txt) "
+                "или загрузите cookies.txt в /app/data/cookies.txt. "
+                "Проверьте логи при старте: yt-dlp cookies=… "
                 "На Mac: YTDLP_COOKIES_FROM_BROWSER=chrome."
             )
         raise DownloadError(f"YouTube требует вход (антибот). {hint}")
