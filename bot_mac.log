@@ -1,0 +1,15 @@
+2026-07-27 12:39:21,130 [INFO] playlists: Playlist DB ready: /Users/family/Downloads/илоилоиил — копия/╤А╨┐╨░╨░╤А╨░╨╝╨┐╤А╤Б╨░╨╝ тАФ ╨║╨╛╨┐╨╕╤П (2)/playlist.db
+2026-07-27 12:39:21,479 [INFO] __main__: Telegram OK: @projectcover_bot
+2026-07-27 12:39:21,641 [INFO] __main__: Webhook cleared — using long polling
+2026-07-27 12:39:21,642 [INFO] __main__: Bot started. default_country=ru FSM=MemoryStorage
+2026-07-27 12:39:21,643 [INFO] aiogram.dispatcher: Start polling
+2026-07-27 12:39:21,714 [INFO] aiogram.dispatcher: Run polling for bot @projectcover_bot id=8607416484 - 'Музыка | Треки | Обложки'
+2026-07-27 12:55:50,961 [INFO] playlists: Playlist DB ready: /Users/family/Downloads/илоилоиил — копия/╤А╨┐╨░╨░╤А╨░╨╝╨┐╤А╤Б╨░╨╝ тАФ ╨║╨╛╨┐╨╕╤П (2)/playlist.db
+2026-07-27 12:55:51,322 [INFO] __main__: Telegram OK: @projectcover_bot
+2026-07-27 12:55:51,485 [INFO] __main__: Webhook cleared — using long polling
+2026-07-27 12:55:51,487 [INFO] __main__: Bot started. default_country=ru FSM=MemoryStorage
+2026-07-27 12:55:51,487 [INFO] aiogram.dispatcher: Start polling
+2026-07-27 12:55:51,559 [INFO] aiogram.dispatcher: Run polling for bot @projectcover_bot id=8607416484 - 'Музыка | Треки | Обложки'
+2026-07-27 12:55:51,746 [INFO] __main__: classify_query('хази б') → ambiguous
+2026-07-27 12:55:52,242 [INFO] aiogram.event: Update id=752556655 is handled. Duration 493 ms by bot id=8607416484
+2026-07-27 12:55:52,278 [INFO] aiogram.event: Update id=752556653 is handled. Duration 531 ms by bot id=8607416484

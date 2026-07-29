@@ -1,0 +1,20 @@
+# Python 3.10–3.12 (рекомендуется 3.12). Python 3.14 не поддерживается.
+aiogram==3.13.1
+aiohttp==3.10.10
+aiohttp-socks==0.9.1
+aiofiles>=23.2.1
+python-dotenv==1.0.1
+xmltodict==0.14.2
+cachetools==5.5.2
+lxml==5.3.1
+beautifulsoup4==4.12.3
+yt-dlp>=2024.8.0
+yandex-music>=2.2.0
+ytmusicapi>=1.7.0
+spotdl>=4.2.0
+pydub>=0.25.1
+Pillow>=10.0.0
+ImageHash>=4.3.1
+pytesseract>=0.3.10
+# EasyOCR НЕ ставить через этот файл — качает PyTorch (ГБ) и зависает pip.
+# При желании отдельно: pip install easyocr
