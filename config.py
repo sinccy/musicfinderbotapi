@@ -23,10 +23,15 @@ def _resolve_ytdlp_cookies_file() -> str:
     path = _get("YTDLP_COOKIES_FILE") or _get("YOUTUBE_COOKIES_FILE")
     if path and Path(path).is_file():
         return path
-    b64 = _get("YTDLP_COOKIES_B64")
+    b64 = _get("YTDLP_COOKIES_B64").replace("\n", "").replace("\r", "").strip()
     if not b64:
         return path
-    target = Path("/tmp/youtube_cookies.txt")
+    data_dir = Path(_get("DATA_DIR") or "/app/data")
+    target = (
+        data_dir / "youtube_cookies.txt"
+        if data_dir.is_dir()
+        else Path("/tmp/youtube_cookies.txt")
+    )
     try:
         target.write_bytes(base64.b64decode(b64, validate=False))
         if target.stat().st_size > 50:
@@ -34,6 +39,18 @@ def _resolve_ytdlp_cookies_file() -> str:
     except Exception:  # noqa: BLE001
         pass
     return path
+
+
+def _resolve_ytdlp_cookies_from_browser(cookies_file: str) -> str:
+    """На Docker/сервере браузера нет — не пытаемся cookies-from-browser."""
+    if cookies_file and Path(cookies_file).is_file():
+        return ""
+    val = _get("YTDLP_COOKIES_FROM_BROWSER") or _get("YOUTUBE_COOKIES_FROM_BROWSER")
+    if not val:
+        return ""
+    if Path("/.dockerenv").exists() or _get("YTDLP_COOKIES_B64"):
+        return ""
+    return val
 
 
 BOT_TOKEN = _get("BOT_TOKEN")
@@ -58,8 +75,8 @@ TELEGRAM_PROXY = (
 # Mac: YTDLP_COOKIES_FROM_BROWSER=chrome
 # Сервер: YTDLP_COOKIES_FILE=/app/cookies.txt или YTDLP_COOKIES_B64=<base64 cookies.txt>
 YTDLP_COOKIES_FILE = _resolve_ytdlp_cookies_file()
-YTDLP_COOKIES_FROM_BROWSER = (
-    _get("YTDLP_COOKIES_FROM_BROWSER") or _get("YOUTUBE_COOKIES_FROM_BROWSER")
+YTDLP_COOKIES_FROM_BROWSER = _resolve_ytdlp_cookies_from_browser(
+    YTDLP_COOKIES_FILE
 )
 
 # YouTube Music регион каталога (ISO: US, GB, DE…).

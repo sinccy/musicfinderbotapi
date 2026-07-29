@@ -3912,6 +3912,16 @@ async def main() -> None:
     require_core_env()
     validate_token(config.BOT_TOKEN)
     init_playlist_db()
+    from pathlib import Path
+
+    from config import YTDLP_COOKIES_FILE, YTMUSIC_PROXY
+
+    ck = YTDLP_COOKIES_FILE or ""
+    logger.info(
+        "yt-dlp cookies=%s proxy=%s",
+        ck if ck and Path(ck).is_file() else "none",
+        "yes" if YTMUSIC_PROXY else "no",
+    )
 
     session = None
     if TELEGRAM_PROXY:
