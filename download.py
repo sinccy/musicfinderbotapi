@@ -35,6 +35,7 @@ from config import (
     MAX_AUDIO_BYTES,
     YTDLP_COOKIES_FILE,
     YTDLP_COOKIES_FROM_BROWSER,
+    YTDLP_PROXY,
     YTMUSIC_LANGUAGE,
     YTMUSIC_LOCATION,
     YTMUSIC_PROXY,
@@ -842,12 +843,46 @@ async def download_track(
                 data=best.data,
             )
 
-        # Ролик на YTM/YT нашёлся, но yt-dlp не смог скачать формат —
-        # это не «закрытый контент», а сервер/cookies/версия yt-dlp.
+        # yt-dlp на VPS часто не видит форматы — пробуем внешний audio API
+        await _set_pct(92)
+        urls: list[str] = []
+        if album and artist and title:
+            vid = await _ytmusic_album_video_for_track(artist, album, title)
+            if vid:
+                urls.append(f"https://www.youtube.com/watch?v={vid}")
+        ytm = await _resolve_best_ytmusic(
+            artist=artist, title=title, expected=expected_duration, album=album
+        )
+        if ytm and ytm not in urls:
+            urls.append(ytm)
+        fb = await _external_audio_fallback(
+            tmp_dir,
+            artist=artist,
+            title=title,
+            expected=expected_duration,
+            prefer_urls=urls,
+        )
+        if fb is not None:
+            ok = _accept(
+                fb,
+                label="external",
+                expected=expected_duration,
+                require_title_match=False,
+            )
+            if ok is not None:
+                await _set_pct(100)
+                return DownloadedAudio(
+                    path=ok.path,
+                    title=title or ok.title,
+                    artist=artist or ok.artist,
+                    duration=ok.duration,
+                    data=b"",
+                )
+
         raise DownloadError(
-            "Не удалось скачать аудио с YouTube (формат недоступен). "
-            "Обновите cookies (YTDLP_COOKIES_B64) или пришлите ссылку на ролик. "
-            "На сервере: pip install -U yt-dlp."
+            "Не удалось скачать аудио с YouTube (формат недоступен с сервера). "
+            "Обновите cookies (YTDLP_COOKIES_B64) свежим экспортом из Chrome "
+            "или пришлите ссылку на ролик."
         )
     except DownloadError:
         raise
@@ -2574,7 +2609,25 @@ def _node_bin() -> Optional[str]:
 _MAX_YT_DURATION_SEC = 30 * 60
 
 
-def _ytdlp_auth_args() -> list[str]:
+def _ytdlp_download_proxy(use_proxy: bool | None) -> str:
+    """
+    Прокси для скачивания yt-dlp.
+    YTMUSIC_PROXY нужен для каталога; для googlevideo иногда ломает форматы —
+    поэтому профили пробуют и с прокси, и без.
+    """
+    explicit = (YTDLP_PROXY or "").strip()
+    if explicit.lower() in {"none", "off", "0", "false"}:
+        return ""
+    if use_proxy is False:
+        return ""
+    if explicit:
+        return explicit
+    if use_proxy is True or use_proxy is None:
+        return (YTMUSIC_PROXY or "").strip()
+    return ""
+
+
+def _ytdlp_auth_args(*, use_cookies: bool = True) -> list[str]:
     """Cookies / JS runtime — без этого YouTube часто требует Sign in."""
     args: list[str] = []
     node = _node_bin()
@@ -2586,10 +2639,11 @@ def _ytdlp_auth_args() -> list[str]:
         logger.warning(
             "node not found — YouTube может не отдать аудио (Requested format…)"
         )
-    if YTDLP_COOKIES_FILE and Path(YTDLP_COOKIES_FILE).is_file():
-        args.extend(["--cookies", YTDLP_COOKIES_FILE])
-    elif YTDLP_COOKIES_FROM_BROWSER:
-        args.extend(["--cookies-from-browser", YTDLP_COOKIES_FROM_BROWSER])
+    if use_cookies:
+        if YTDLP_COOKIES_FILE and Path(YTDLP_COOKIES_FILE).is_file():
+            args.extend(["--cookies", YTDLP_COOKIES_FILE])
+        elif YTDLP_COOKIES_FROM_BROWSER:
+            args.extend(["--cookies-from-browser", YTDLP_COOKIES_FROM_BROWSER])
     return args
 
 
@@ -2597,9 +2651,11 @@ def _build_ytdlp_cmd(
     search: str,
     outtmpl: str,
     *,
-    player_clients: str = "tv,web",
+    player_clients: str = "web_safari",
     audio_format: str = "",
     extract_mp3: bool | None = None,
+    use_proxy: bool | None = True,
+    use_cookies: bool = True,
 ) -> list[str]:
     cmd = [
         sys.executable,
@@ -2614,9 +2670,10 @@ def _build_ytdlp_cmd(
         "--newline",
         "--progress",
         "--no-playlist",
+        "--force-ipv4",
     ]
-    cmd.extend(_ytdlp_auth_args())
-    proxy = (YTMUSIC_PROXY or "").strip()
+    cmd.extend(_ytdlp_auth_args(use_cookies=use_cookies))
+    proxy = _ytdlp_download_proxy(use_proxy)
     if proxy:
         cmd.extend(["--proxy", proxy])
     is_yt = (
@@ -2625,10 +2682,13 @@ def _build_ytdlp_cmd(
         or search.startswith("ytsearch")
     )
     if is_yt:
-        # пустой format = yt-dlp сам выберет (android часто отдаёт только images)
+        # пустой format = yt-dlp сам выберет
         if audio_format:
             cmd.extend(["-f", audio_format])
-        cmd.extend(["--extractor-args", f"youtube:player_client={player_clients}"])
+        if player_clients:
+            cmd.extend(
+                ["--extractor-args", f"youtube:player_client={player_clients}"]
+            )
         cmd.extend(
             [
                 "--match-filter",
@@ -2655,16 +2715,42 @@ def _ytdlp_retryable(joined_stderr: str) -> bool:
             "only images are available",
             "signature extraction failed",
             "nsig extraction failed",
+            "the page needs to be reloaded",
+            "login_required",
         )
     )
 
 
-# Мало профилей = меньше пиков RAM (каждый yt-dlp+node ≈ 150–250 МБ).
-# tv/web с cookies обычно отдают аудио; android часто только storyboard.
+# Профили: web_safari + proxy/без; android без cookies (cookies android не любит).
 _YTDLP_PROFILES: tuple[dict[str, Any], ...] = (
-    {"player_clients": "tv,web", "audio_format": "", "extract_mp3": True},
-    {"player_clients": "web,mweb", "audio_format": "bestaudio/best", "extract_mp3": True},
-    {"player_clients": "tv,mweb,web", "audio_format": "", "extract_mp3": False},
+    {
+        "player_clients": "web_safari",
+        "audio_format": "",
+        "extract_mp3": True,
+        "use_proxy": True,
+        "use_cookies": True,
+    },
+    {
+        "player_clients": "web_safari,mweb",
+        "audio_format": "",
+        "extract_mp3": True,
+        "use_proxy": False,
+        "use_cookies": True,
+    },
+    {
+        "player_clients": "android",
+        "audio_format": "bestaudio/best",
+        "extract_mp3": True,
+        "use_proxy": True,
+        "use_cookies": False,
+    },
+    {
+        "player_clients": "mweb",
+        "audio_format": "",
+        "extract_mp3": False,
+        "use_proxy": True,
+        "use_cookies": True,
+    },
 )
 
 
@@ -2919,60 +3005,149 @@ def _finalize_file(path: Path, query: str, tmp_dir: Path) -> DownloadedAudio:
     )
 
 
+_COBALT_APIS = (
+    "https://api.cobalt.tools/",
+    "https://cobalt-api.kwiatekmiki.com/",
+)
+
+
+async def _cobalt_download_url(watch_url: str) -> str:
+    """Вернуть прямой URL аудио через Cobalt API, или ''."""
+    session = await get_session()
+    body = {
+        "url": watch_url,
+        "downloadMode": "audio",
+        "audioFormat": "mp3",
+        "filenameStyle": "basic",
+    }
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": UA,
+    }
+    for api in _COBALT_APIS:
+        try:
+            async with session.post(
+                api,
+                json=body,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=40),
+            ) as resp:
+                if resp.status >= 400:
+                    continue
+                data = await resp.json(content_type=None)
+            status = (data.get("status") or "").lower()
+            if status in {"tunnel", "redirect", "stream"} and data.get("url"):
+                return str(data["url"])
+            if status == "picker":
+                for item in data.get("picker") or []:
+                    if item.get("url") and (
+                        item.get("type") in {None, "audio", "video"}
+                    ):
+                        return str(item["url"])
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("cobalt %s: %s", api, exc)
+    return ""
+
+
+async def _download_url_to_file(
+    url: str, out: Path, *, timeout: float = 90.0
+) -> bool:
+    session = await get_session()
+    try:
+        async with session.get(
+            url,
+            headers={"User-Agent": UA, "Accept": "*/*"},
+            timeout=aiohttp.ClientTimeout(total=timeout),
+            allow_redirects=True,
+        ) as resp:
+            if resp.status != 200:
+                return False
+            ctype = (resp.headers.get("Content-Type") or "").lower()
+            data = await resp.read()
+        if "text/html" in ctype or len(data) < 50_000:
+            return False
+        out.write_bytes(data)
+        return out.stat().st_size >= 50_000
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("download url: %s", exc)
+        return False
+
+
+async def _external_audio_fallback(
+    tmp_dir: Path,
+    *,
+    artist: str = "",
+    title: str = "",
+    expected: Optional[int] = None,
+    prefer_urls: Sequence[str] = (),
+) -> Optional[DownloadedAudio]:
+    """Cobalt / vevioz — когда yt-dlp на VPS не видит форматы."""
+    from utils import extract_youtube_video_id
+
+    urls: list[str] = []
+    for u in prefer_urls:
+        u = (u or "").strip()
+        if u and u not in urls:
+            urls.append(u)
+    if not urls and artist and title:
+        yt = await _resolve_best_youtube(
+            artist=artist,
+            title=title,
+            query=f"{artist} {title}".strip(),
+            expected=expected,
+        )
+        if yt:
+            urls.append(yt)
+
+    for watch in urls[:3]:
+        vid = extract_youtube_video_id(watch) or ""
+        if not vid:
+            continue
+        watch_url = f"https://www.youtube.com/watch?v={vid}"
+        out = tmp_dir / f"{_safe_name(artist)} - {_safe_name(title or vid)}.mp3"
+
+        cobalt_url = await _cobalt_download_url(watch_url)
+        if cobalt_url and await _download_url_to_file(cobalt_url, out):
+            try:
+                return await asyncio.to_thread(
+                    _finalize_file, out, f"{artist} {title}".strip(), tmp_dir
+                )
+            except DownloadError as exc:
+                logger.warning("cobalt finalize: %s", exc)
+
+        session = await get_session()
+        for try_url in (
+            f"https://api.vevioz.com/download/{vid}/mp3",
+            f"https://api.vevioz.com/api/button/mp3/{vid}",
+        ):
+            try:
+                async with session.get(
+                    try_url,
+                    headers={"User-Agent": UA, "Accept": "*/*"},
+                    timeout=aiohttp.ClientTimeout(total=45),
+                ) as resp:
+                    if resp.status != 200:
+                        continue
+                    ctype = (resp.headers.get("Content-Type") or "").lower()
+                    data = await resp.read()
+                if "text/html" in ctype or len(data) < 50_000:
+                    continue
+                out.write_bytes(data)
+                logger.info("vevioz OK: %s (%d)", out.name, out.stat().st_size)
+                return await asyncio.to_thread(
+                    _finalize_file, out, f"{artist} {title}".strip(), tmp_dir
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("vevioz %s: %s", try_url, exc)
+    return None
+
+
 async def _vevioz_fallback_async(
     query: str, tmp_dir: Path
 ) -> Optional[DownloadedAudio]:
-    """Fallback: лучший YouTube id → api.vevioz.com → aiohttp download."""
-    video_id = ""
-    title = query
-    artist = ""
-    try:
-        url = await _resolve_best_youtube(artist="", title=query, query=query)
-        if url and "v=" in url:
-            video_id = url.split("v=", 1)[1].split("&", 1)[0]
-            title = query
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("vevioz resolve: %s", exc)
-        return None
-
-    if not video_id:
-        return None
-
-    session = await get_session()
-    for try_url in (
-        f"https://api.vevioz.com/download/{video_id}/mp3",
-        f"https://api.vevioz.com/api/button/mp3/{video_id}",
-    ):
-        try:
-            async with session.get(
-                try_url,
-                headers={"User-Agent": UA, "Accept": "*/*"},
-                timeout=aiohttp.ClientTimeout(total=45),
-            ) as resp:
-                if resp.status != 200:
-                    continue
-                ctype = (resp.headers.get("Content-Type") or "").lower()
-                data = await resp.read()
-            if "text/html" in ctype or len(data) < 50_000:
-                continue
-            out = tmp_dir / f"{_safe_name(artist)} - {_safe_name(title)}.mp3"
-            out.write_bytes(data)
-            if out.stat().st_size > MAX_AUDIO_BYTES:
-                compressed = await asyncio.to_thread(_try_compress, out)
-                if compressed:
-                    out = compressed
-            if out.stat().st_size > MAX_AUDIO_BYTES:
-                return None
-            logger.info("vevioz OK: %s (%d)", out.name, out.stat().st_size)
-            return DownloadedAudio(
-                path=out,
-                title=title,
-                artist=artist,
-                data=out.read_bytes(),
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("vevioz %s: %s", try_url, exc)
-    return None
+    """Совместимость: старый вызов → новый fallback."""
+    return await _external_audio_fallback(tmp_dir, title=query, prefer_urls=[])
 
 
 async def _itunes_preview_async(

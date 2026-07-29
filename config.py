@@ -133,6 +133,10 @@ YTDLP_COOKIES_FILE = _resolve_ytdlp_cookies_file()
 YTDLP_COOKIES_FROM_BROWSER = _resolve_ytdlp_cookies_from_browser(
     YTDLP_COOKIES_FILE
 )
+# Прокси только для yt-dlp скачивания (отдельно от YTMUSIC_PROXY).
+# Пусто = пробовать YTMUSIC_PROXY и без прокси.
+# "none" / "off" = никогда не использовать прокси для yt-dlp.
+YTDLP_PROXY = _get("YTDLP_PROXY")
 
 
 def refresh_ytdlp_cookies() -> str:
