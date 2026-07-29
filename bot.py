@@ -3909,6 +3909,9 @@ async def _check_telegram(bot: Bot) -> None:
 
 
 async def main() -> None:
+    from bootstrap import ensure_system_deps
+
+    ensure_system_deps()
     require_core_env()
     validate_token(config.BOT_TOKEN)
     init_playlist_db()
