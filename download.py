@@ -150,10 +150,9 @@ def _free_avail_key(artist: str, album: str, *, track: str = "") -> str:
 
 CLOSED_DOWNLOAD_NOTICE = (
     "⛔ <b>Закрытый доступ к загрузке</b>\n"
-    "Полных студийных версий нет в свободной прослушке "
-    "(YouTube / SoundCloud).\n"
-    "Обложка и ссылки на альбом — ниже.\n"
-    "Чтобы скачать: найдите ролик на YouTube и <b>пришлите ссылку</b> боту."
+    "Студийной версии не нашли на YouTube Music / SoundCloud / YouTube.\n"
+    "Обложка и ссылки — ниже.\n"
+    "Можно <b>прислать ссылку</b> на ролик YouTube — бот скачает напрямую."
 )
 
 
@@ -236,13 +235,18 @@ async def probe_track_has_free_source(
     short_ambiguous = len(t_norm.split()) == 1 and len(t_norm) <= 5
 
     try:
+        # YTM API — не зависит от yt-dlp bot-check / UMG metadata block
+        ytm = await _resolve_best_ytmusic(
+            artist=artist, title=title, expected=expected, album=album
+        )
+        if ytm:
+            return True
+
         if album and artist:
             vid = await _ytmusic_album_video_for_track(artist, album, title)
             if vid:
-                status = await _yt_video_status(vid)
-                # ok / unknown (bot) — кнопка открыта; blocked (UMG) — ищем замену
-                if status in {"ok", "unknown"}:
-                    return True
+                # официальная карта альбома — пробуем качать (android+cookies)
+                return True
 
         # короткий title вроде «che» часто ловит чужой коллаб (BLEAU) —
         # для «свободной загрузки» это не считается, нужен YTM/альбом или
@@ -263,14 +267,9 @@ async def probe_track_has_free_source(
             album=album,
         )
         if yt and not short_ambiguous:
-            from utils import extract_youtube_video_id
-
-            yvid = extract_youtube_video_id(yt) or ""
-            if not yvid:
-                return True
-            st = await _yt_video_status(yvid)
-            if st in {"ok", "unknown"}:
-                return True
+            # _resolve_best_youtube уже отфильтровал мусор по score;
+            # metadata «blocked» на probe ≠ реально не скачается
+            return True
     except Exception as exc:  # noqa: BLE001
         logger.debug("probe_track_has_free_source: %s", exc)
     return False
@@ -337,12 +336,12 @@ async def probe_album_free_download(
                     unknown_n += 1
             if sample_vids and blocked_n == len(sample_vids):
                 logger.info(
-                    "free download LOCK (YTM map copyright) %s — %s samples=%d",
+                    "free download OK via YTM map (probe blocked, album on YTM) %s — %s",
                     artist,
                     album,
-                    len(sample_vids),
                 )
-                # все sample под copyright — идём к SC/YT сэмплу ниже
+                _FREE_AVAIL_CACHE[cache_key] = (True, time.time())
+                return True
             elif ok_n > 0 or unknown_n > 0 or not sample_vids:
                 # bot-check ≠ закрытый контент: android-скачивание часто проходит
                 _FREE_AVAIL_CACHE[cache_key] = (True, time.time())
