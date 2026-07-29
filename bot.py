@@ -18,7 +18,7 @@ import aiohttp
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -163,6 +163,20 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 logger = logging.getLogger(__name__)
+
+
+async def safe_callback_answer(
+    callback: CallbackQuery,
+    text: str = "",
+    **kwargs: Any,
+) -> None:
+    try:
+        await callback.answer(text, **kwargs)
+    except TelegramBadRequest as exc:
+        if "query is too old" in str(exc).lower():
+            logger.debug("callback answer skipped: %s", exc)
+        else:
+            raise
 
 # --- In-memory caches (режим — в FSM) ---
 _user_country: dict[int, str] = {}
@@ -3342,7 +3356,7 @@ async def on_callback(callback: CallbackQuery, bot: Bot, state: FSMContext) -> N
     # album/single pagination / назад с карточки: ap:<kind>:<session_key>:<page>
     if data.startswith("ap:"):
         parts = data.split(":")
-        await callback.answer()
+        await safe_callback_answer(callback)
         if len(parts) >= 4 and msg:
             kind, key, page_s = parts[1], parts[2], parts[3]
             try:

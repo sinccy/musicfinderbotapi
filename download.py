@@ -187,6 +187,8 @@ def _yt_video_status_sync(video_id: str) -> str:
         "http_headers": {"User-Agent": UA},
         "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
     }
+    if YTDLP_COOKIES_FILE and Path(YTDLP_COOKIES_FILE).is_file():
+        opts["cookiefile"] = YTDLP_COOKIES_FILE
     proxy = (YTMUSIC_PROXY or "").strip()
     if proxy:
         opts["proxy"] = proxy
@@ -2615,6 +2617,10 @@ def _ytdlp_auth_args() -> list[str]:
         args.extend(["--js-runtimes", f"node:{node}"])
         # EJS challenge solver (нужен для аудиоформатов на новых YouTube)
         args.extend(["--remote-components", "ejs:github"])
+    else:
+        logger.warning(
+            "node not found — YouTube может не отдать аудио (Requested format…)"
+        )
     if YTDLP_COOKIES_FILE and Path(YTDLP_COOKIES_FILE).is_file():
         args.extend(["--cookies", YTDLP_COOKIES_FILE])
     elif YTDLP_COOKIES_FROM_BROWSER:
@@ -2622,7 +2628,14 @@ def _ytdlp_auth_args() -> list[str]:
     return args
 
 
-def _build_ytdlp_cmd(search: str, outtmpl: str) -> list[str]:
+def _build_ytdlp_cmd(
+    search: str,
+    outtmpl: str,
+    *,
+    player_clients: str = "android,web",
+    audio_format: str = "bestaudio/best",
+    extract_mp3: bool | None = None,
+) -> list[str]:
     cmd = [
         sys.executable,
         "-m",
@@ -2641,23 +2654,51 @@ def _build_ytdlp_cmd(search: str, outtmpl: str) -> list[str]:
     proxy = (YTMUSIC_PROXY or "").strip()
     if proxy:
         cmd.extend(["--proxy", proxy])
-    if _has_ffmpeg():
-        cmd.extend(["-x", "--audio-format", "mp3", "--audio-quality", "0"])
-    else:
-        logger.warning("ffmpeg не найден — скачиваю без конвертации в mp3")
-        cmd.extend(["-f", "bestaudio/best"])
-    if "youtube.com" in search or "youtu.be" in search or search.startswith("ytsearch"):
-        # cookies + EJS решают Sign in / signature; android часто стабильнее
-        cmd.extend(["--extractor-args", "youtube:player_client=android,web"])
-        # отсекаем превью/сниппеты и многочасовые миксы
+    is_yt = (
+        "youtube.com" in search
+        or "youtu.be" in search
+        or search.startswith("ytsearch")
+    )
+    if is_yt:
+        cmd.extend(["-f", audio_format])
+        cmd.extend(["--extractor-args", f"youtube:player_client={player_clients}"])
         cmd.extend(
             [
                 "--match-filter",
                 f"duration >=? {_MIN_FULL_TRACK_SEC} & duration <=? {_MAX_YT_DURATION_SEC}",
             ]
         )
+    if extract_mp3 is None:
+        extract_mp3 = _has_ffmpeg()
+    if extract_mp3:
+        cmd.extend(["-x", "--audio-format", "mp3", "--audio-quality", "0"])
+    elif not is_yt:
+        cmd.extend(["-f", "bestaudio/best"])
     cmd.append(search)
     return cmd
+
+
+def _ytdlp_retryable(joined_stderr: str) -> bool:
+    low = joined_stderr.lower()
+    return any(
+        s in low
+        for s in (
+            "requested format is not available",
+            "format is not available",
+            "only images are available",
+            "signature extraction failed",
+            "nsig extraction failed",
+        )
+    )
+
+
+_YTDLP_PROFILES: tuple[dict[str, Any], ...] = (
+    {"player_clients": "android,web", "audio_format": "bestaudio/best", "extract_mp3": True},
+    {"player_clients": "ios,web", "audio_format": "bestaudio/best", "extract_mp3": True},
+    {"player_clients": "mweb,web", "audio_format": "ba/b", "extract_mp3": True},
+    {"player_clients": "android,web", "audio_format": "bestaudio/best", "extract_mp3": False},
+    {"player_clients": "web", "audio_format": "bestaudio/best", "extract_mp3": False},
+)
 
 
 async def _download_ytdlp_async(
@@ -2673,11 +2714,65 @@ async def _download_ytdlp_async(
         search = f"{source}:{query}"
     else:
         search = query  # прямой URL
-    cmd = _build_ytdlp_cmd(search, outtmpl)
+    is_yt = (
+        "youtube.com" in search
+        or "youtu.be" in search
+        or search.startswith("ytsearch")
+    )
+    attempts: tuple[dict[str, Any], ...] = _YTDLP_PROFILES if is_yt else ({},)
 
     logger.info("yt-dlp async: %s", search)
     await set_pct(5)
 
+    last_stderr = ""
+    for attempt, profile in enumerate(attempts or ({},), start=1):
+        if attempt > 1:
+            logger.info("yt-dlp retry %d/%d profile=%s", attempt, len(attempts), profile)
+        cmd = (
+            _build_ytdlp_cmd(search, outtmpl, **profile)
+            if profile
+            else _build_ytdlp_cmd(search, outtmpl)
+        )
+        result, joined, _code = await _run_ytdlp_process(
+            cmd, tmp_dir, query, source, timeout, set_pct
+        )
+        if result is not None:
+            return result
+        last_stderr = joined
+        if not is_yt or not _ytdlp_retryable(joined):
+            break
+
+    joined = last_stderr
+    if "sign in to confirm" in joined.lower():
+        if YTDLP_COOKIES_FILE and Path(YTDLP_COOKIES_FILE).is_file():
+            hint = "Cookies заданы, но YouTube всё равно блокирует — обновите cookies.txt."
+        elif YTDLP_COOKIES_FROM_BROWSER:
+            hint = (
+                "YTDLP_COOKIES_FROM_BROWSER работает только на Mac с браузером. "
+                "На сервере: экспортируйте cookies.txt и задайте "
+                "YTDLP_COOKIES_FILE=/app/cookies.txt или YTDLP_COOKIES_B64."
+            )
+        else:
+            hint = (
+                "На сервере задайте YTDLP_COOKIES_B64 в env (base64 cookies.txt) "
+                "или загрузите cookies.txt в /app/data/cookies.txt. "
+                "Проверьте логи при старте: yt-dlp cookies=… "
+                "На Mac: YTDLP_COOKIES_FROM_BROWSER=chrome."
+            )
+        raise DownloadError(f"YouTube требует вход (антибот). {hint}")
+    if _ytdlp_retryable(joined):
+        logger.warning("yt-dlp all profiles failed (format): %s", joined[-300:])
+    return None
+
+
+async def _run_ytdlp_process(
+    cmd: list[str],
+    tmp_dir: Path,
+    query: str,
+    source: str,
+    timeout: float,
+    set_pct: Callable[[int], Awaitable[None]],
+) -> tuple[Optional[DownloadedAudio], str, Optional[int]]:
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -2687,7 +2782,7 @@ async def _download_ytdlp_async(
         )
     except Exception as exc:  # noqa: BLE001
         logger.error("cannot start yt-dlp: %s", exc)
-        return None
+        return None, str(exc), None
 
     last_pct = 5
     stderr_chunks: list[str] = []
@@ -2735,73 +2830,48 @@ async def _download_ytdlp_async(
             await proc.wait()
         except Exception:  # noqa: BLE001
             pass
-        # файл мог успеть скачаться до kill
         audio = _pick_downloaded_file(tmp_dir)
         if audio is not None:
             await set_pct(97)
             try:
-                return await asyncio.to_thread(_finalize_file, audio, query, tmp_dir)
+                return (
+                    await asyncio.to_thread(_finalize_file, audio, query, tmp_dir),
+                    "",
+                    None,
+                )
             except DownloadError as exc:
                 logger.warning("finalize after timeout rejected: %s", exc)
-                return None
+                return None, "timeout", None
         if source.startswith("yt"):
             raise DownloadError(
                 "⏰ Скачивание превысило лимит времени. Попробуйте ещё раз."
             )
-        return None
+        return None, "timeout", None
 
     code = proc.returncode
+    joined = "\n".join(stderr_chunks)
     audio = _pick_downloaded_file(tmp_dir)
-    if audio is not None and (code in _OK_CODES or code is None):
-        await set_pct(97)
-        try:
-            return await asyncio.to_thread(_finalize_file, audio, query, tmp_dir)
-        except DownloadError as exc:
-            logger.warning("finalize rejected: %s", exc)
-            try:
-                audio.unlink(missing_ok=True)
-            except OSError:
-                pass
-            return None
-
     if audio is not None:
-        # файл есть даже при странном коде выхода
         await set_pct(97)
         try:
-            return await asyncio.to_thread(_finalize_file, audio, query, tmp_dir)
+            return (
+                await asyncio.to_thread(_finalize_file, audio, query, tmp_dir),
+                joined,
+                code,
+            )
         except DownloadError as exc:
             logger.warning("finalize rejected: %s", exc)
             try:
                 audio.unlink(missing_ok=True)
             except OSError:
                 pass
-            return None
+            return None, joined, code
 
     tail = "\n".join(stderr_chunks[-8:])
     logger.warning("yt-dlp %s exit %s: %s", source, code, tail[-500:])
-    joined = "\n".join(stderr_chunks)
     if "match-filter" in joined.lower() or "does not pass filter" in joined.lower():
-        # короткое/длинное — просто пробуем следующий источник
         logger.info("yt-dlp match-filter skip (%s)", source)
-        return None
-    if "sign in to confirm" in joined.lower():
-        if YTDLP_COOKIES_FILE and Path(YTDLP_COOKIES_FILE).is_file():
-            hint = "Cookies заданы, но YouTube всё равно блокирует — обновите cookies.txt."
-        elif YTDLP_COOKIES_FROM_BROWSER:
-            hint = (
-                "YTDLP_COOKIES_FROM_BROWSER работает только на Mac с браузером. "
-                "На сервере: экспортируйте cookies.txt и задайте "
-                "YTDLP_COOKIES_FILE=/app/cookies.txt или YTDLP_COOKIES_B64."
-            )
-        else:
-            hint = (
-                "На сервере задайте YTDLP_COOKIES_B64 в env (base64 cookies.txt) "
-                "или загрузите cookies.txt в /app/data/cookies.txt. "
-                "Проверьте логи при старте: yt-dlp cookies=… "
-                "На Mac: YTDLP_COOKIES_FROM_BROWSER=chrome."
-            )
-        raise DownloadError(f"YouTube требует вход (антибот). {hint}")
-    return None
+    return None, joined, code
 
 
 def _pick_downloaded_file(tmp_dir: Path) -> Optional[Path]:
