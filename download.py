@@ -2686,8 +2686,8 @@ def _ytdlp_auth_args(*, use_cookies: bool = True) -> list[str]:
     node = _node_bin()
     if node:
         args.extend(["--js-runtimes", f"node:{node}"])
-        # EJS challenge solver (нужен для аудиоформатов / HLS)
-        args.extend(["--remote-components", "ejs:github"])
+        # pip-пакет yt-dlp-ejs уже в образе; ejs:github с Bothost часто недоступен
+        # и тогда остаются только storyboard → «Requested format is not available».
     else:
         logger.warning(
             "node not found — YouTube может не отдать аудио (Requested format…)"
@@ -2711,8 +2711,8 @@ def _build_ytdlp_cmd(
     search: str,
     outtmpl: str,
     *,
-    player_clients: str = "web_safari,mweb",
-    audio_format: str = "bestaudio/best",
+    player_clients: str = "web",
+    audio_format: str = "18/bestaudio/best",
     extract_mp3: bool | None = None,
     use_proxy: bool | None = True,
     use_cookies: bool = True,
@@ -2742,9 +2742,12 @@ def _build_ytdlp_cmd(
         or search.startswith("ytsearch")
     )
     if is_yt:
-        # bestaudio/best — на практике берёт HLS 96 когда DASH режется PO-token
+        # 18 = progressive 360p (https) — меньше RAM, без HLS-1080 (формат 96 ~43MB).
+        # bestaudio часто пуст (PO-token); без fallback на 18/best → format not available.
         if audio_format:
             cmd.extend(["-f", audio_format])
+        # предпочитать https/меньше размер, не 1080 HLS
+        cmd.extend(["-S", "proto:https,res:360,size"])
         if player_clients:
             cmd.extend(
                 ["--extractor-args", f"youtube:player_client={player_clients}"]
@@ -2758,7 +2761,8 @@ def _build_ytdlp_cmd(
     if extract_mp3 is None:
         extract_mp3 = _has_ffmpeg()
     if extract_mp3:
-        cmd.extend(["-x", "--audio-format", "mp3", "--audio-quality", "0"])
+        # 5 ≈ ~128k — хватает для Telegram, меньше CPU/RAM чем 0 (flac-ish)
+        cmd.extend(["-x", "--audio-format", "mp3", "--audio-quality", "5"])
     elif not is_yt:
         cmd.extend(["-f", "bestaudio/best"])
     cmd.append(search)
@@ -2798,36 +2802,38 @@ def _ytdlp_retryable(joined_stderr: str) -> bool:
     )
 
 
-# Рабочий профиль (проверено): US-proxy + cookies + web_safari,mweb + ejs → HLS 96.
-# android с cookies yt-dlp пропускает; без cookies на proxy → bot-check.
+# Проверено локально (US-proxy + cookies):
+#   web + 18 → progressive https, стабильно
+#   web_safari + HLS → ок, но 96=1080 жрёт RAM на Bothost
+# tv DASH часто 403; android без cookies → bot-check (не ставим последним для UX).
 _YTDLP_PROFILES: tuple[dict[str, Any], ...] = (
     {
+        "player_clients": "web",
+        "audio_format": "18/bestaudio/best",
+        "extract_mp3": True,
+        "use_proxy": True,
+        "use_cookies": True,
+    },
+    {
+        "player_clients": "web_safari",
+        "audio_format": "18/93/92/91/bestaudio/best",
+        "extract_mp3": True,
+        "use_proxy": True,
+        "use_cookies": True,
+    },
+    {
         "player_clients": "web_safari,mweb",
-        "audio_format": "bestaudio/best",
+        "audio_format": "18/bestaudio/best",
         "extract_mp3": True,
         "use_proxy": True,
         "use_cookies": True,
     },
     {
-        "player_clients": "mweb,web_safari",
-        "audio_format": "96/bestaudio/best",
+        "player_clients": "mweb,web",
+        "audio_format": "18/bestaudio/best",
         "extract_mp3": True,
         "use_proxy": True,
         "use_cookies": True,
-    },
-    {
-        "player_clients": "tv,web_safari",
-        "audio_format": "bestaudio/best",
-        "extract_mp3": True,
-        "use_proxy": True,
-        "use_cookies": True,
-    },
-    {
-        "player_clients": "android",
-        "audio_format": "bestaudio/best",
-        "extract_mp3": True,
-        "use_proxy": True,
-        "use_cookies": False,
     },
 )
 
@@ -2856,6 +2862,9 @@ async def _download_ytdlp_async(
     await set_pct(5)
 
     last_stderr = ""
+    # Cookies прошли антибот, но форматов нет (часто старый Node / EJS) —
+    # нельзя показывать «обновите cookies» из-за последнего cookieless-профиля.
+    saw_format_without_auth = False
     for attempt, profile in enumerate(attempts or ({},), start=1):
         if attempt > 1:
             logger.info("yt-dlp retry %d/%d profile=%s", attempt, len(attempts), profile)
@@ -2870,6 +2879,13 @@ async def _download_ytdlp_async(
         if result is not None:
             return result
         last_stderr = joined
+        low = (joined or "").lower()
+        if "sign in to confirm" not in low and (
+            "format is not available" in low
+            or "only images are available" in low
+            or _ytdlp_umg_blocked(joined)
+        ):
+            saw_format_without_auth = True
         if _ytdlp_umg_blocked(joined):
             logger.warning("yt-dlp UMG/geo block — try next profile (proxy)")
         # подчистить обломки перед следующим профилем — меньше пик RAM
@@ -2884,7 +2900,7 @@ async def _download_ytdlp_async(
             break
 
     joined = last_stderr
-    if "sign in to confirm" in joined.lower():
+    if "sign in to confirm" in joined.lower() and not saw_format_without_auth:
         if YTDLP_COOKIES_FILE and Path(YTDLP_COOKIES_FILE).is_file():
             hint = "Cookies заданы, но YouTube всё равно блокирует — обновите cookies.txt."
         elif YTDLP_COOKIES_FROM_BROWSER:
@@ -2901,7 +2917,12 @@ async def _download_ytdlp_async(
                 "На Mac: YTDLP_COOKIES_FROM_BROWSER=chrome."
             )
         raise DownloadError(f"YouTube требует вход (антибот). {hint}")
-    if _ytdlp_retryable(joined):
+    if saw_format_without_auth:
+        logger.warning(
+            "yt-dlp: cookies ok but no usable formats (node/ejs/proxy). last=%s",
+            joined[-300:],
+        )
+    elif _ytdlp_retryable(joined):
         logger.warning("yt-dlp all profiles failed (format): %s", joined[-300:])
     return None
 

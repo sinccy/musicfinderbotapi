@@ -68,9 +68,32 @@ def _install_apt_packages() -> None:
     _run(["rm", "-rf", "/var/lib/apt/lists"])
 
 
+def _node_major(bin_path: str) -> int:
+    try:
+        out = subprocess.check_output(
+            [bin_path, "-v"], text=True, stderr=subprocess.DEVNULL, timeout=10
+        )
+        # v20.18.0 → 20
+        return int(out.strip().lstrip("v").split(".", 1)[0])
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def _install_node_tarball() -> None:
-    if _which("node", "nodejs"):
+    """
+    yt-dlp-ejs нужен Node ≥18. Apt на Bothost часто даёт старый nodejs —
+    тогда YouTube отдаёт только storyboard → «Requested format is not available».
+    """
+    existing = _which("node", "nodejs")
+    if existing and _node_major(existing) >= 18:
+        logger.info("Node.js ok: %s (%s)", existing, _node_major(existing))
         return
+    if existing:
+        logger.warning(
+            "Node.js too old for yt-dlp-ejs (%s) — installing %s tarball",
+            existing,
+            NODE_VER,
+        )
     machine = os.uname().machine
     suffix = _ARCH_SUFFIX.get(machine)
     if not suffix:
@@ -90,6 +113,7 @@ def _install_node_tarball() -> None:
     if node_bin.is_file():
         bin_dir = str(node_bin.parent)
         os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
+        logger.info("Node.js tarball active: %s", node_bin)
 
 
 def _ensure_pip_ffmpeg() -> None:
@@ -148,9 +172,12 @@ def ensure_system_deps() -> None:
     _install_node_tarball()
     _ensure_pip_ffmpeg()
     _upgrade_ytdlp()
+    node = _which("node", "nodejs") or "none"
+    node_ver = _node_major(node) if node != "none" else 0
     logger.info(
-        "Deps: ffmpeg=%s node=%s tesseract=%s",
+        "Deps: ffmpeg=%s node=%s (v%s) tesseract=%s",
         _which("ffmpeg") or "none",
-        _which("node", "nodejs") or "none",
+        node,
+        node_ver or "?",
         _which("tesseract") or "none",
     )
