@@ -452,6 +452,15 @@ def _subprocess_env() -> dict[str, str]:
     if ff:
         bin_dir = str(Path(ff).parent)
         env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
+    # yt-dlp получает прокси только через --proxy.
+    # Env HTTP(S)_PROXY на Bothost + --proxy = двойной прокси / мёртвый EJS.
+    for key in list(env):
+        if key.lower() in {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}:
+            env.pop(key, None)
+    node = _node_bin()
+    if node:
+        env["PATH"] = str(Path(node).parent) + os.pathsep + env.get("PATH", "")
+        env["YTDLP_NODE"] = node
     return env
 
 
@@ -2726,7 +2735,6 @@ def _ytdlp_auth_args(*, use_cookies: bool = True) -> list[str]:
             parts.append(f"node:{node}")
         if parts:
             args.extend(["--js-runtimes", ",".join(parts)])
-            args.extend(["--remote-components", "ejs:github"])
         else:
             logger.warning(
                 "no node/deno — YouTube может не отдать аудио (Requested format…)"
@@ -2840,10 +2848,7 @@ def _ytdlp_retryable(joined_stderr: str) -> bool:
     )
 
 
-# Проверено локально (US-proxy + cookies):
-#   web + 18 → progressive https, стабильно
-#   web_safari + HLS → ок, но 96=1080 жрёт RAM на Bothost
-# tv DASH часто 403; android без cookies → bot-check (не ставим последним для UX).
+# Node≥22 + cookies. Proxy нужен для UMG; без proxy — для проверки EJS / non-UMG.
 _YTDLP_PROFILES: tuple[dict[str, Any], ...] = (
     {
         "player_clients": "web",
@@ -2860,14 +2865,14 @@ _YTDLP_PROFILES: tuple[dict[str, Any], ...] = (
         "use_cookies": True,
     },
     {
-        "player_clients": "web_safari,mweb",
+        "player_clients": "web",
         "audio_format": "18/bestaudio/best",
         "extract_mp3": True,
-        "use_proxy": True,
+        "use_proxy": False,
         "use_cookies": True,
     },
     {
-        "player_clients": "mweb,web",
+        "player_clients": "web_safari,mweb",
         "audio_format": "18/bestaudio/best",
         "extract_mp3": True,
         "use_proxy": True,

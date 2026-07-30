@@ -281,24 +281,31 @@ def _install_deno() -> str:
 
 
 def _js_runtime_args(node_bin: str = "", deno_bin: str = "") -> list[str]:
+    """
+    Только Node ≥22 + скрипты из pip yt-dlp-ejs.
+    Deno первым + ejs:npm/github на Bothost даёт ложный «n challenge solving failed»
+    (npm/GitHub с NL VPS недоступны / deno падает, yt-dlp не успевает взять node).
+    """
+    prefer_deno = (os.environ.get("YTDLP_PREFER_DENO") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     parts: list[str] = []
     deno_bin = deno_bin or (os.environ.get("YTDLP_DENO") or "").strip()
     node_bin = node_bin or (os.environ.get("YTDLP_NODE") or "").strip()
-    if deno_bin and Path(deno_bin).is_file():
+    if prefer_deno and deno_bin and Path(deno_bin).is_file():
         parts.append(f"deno:{deno_bin}")
     if node_bin and Path(node_bin).is_file():
         parts.append(f"node:{node_bin}")
+    elif deno_bin and Path(deno_bin).is_file():
+        parts.append(f"deno:{deno_bin}")
     if not parts:
         return []
-    # ejs:github — запасной канал скриптов; ejs:npm работает с deno
-    return [
-        "--js-runtimes",
-        ",".join(parts),
-        "--remote-components",
-        "ejs:github",
-        "--remote-components",
-        "ejs:npm",
-    ]
+    # НЕ включаем --remote-components: на Bothost github/npm часто недоступны
+    # и ломают solve, хотя yt-dlp-ejs уже установлен через pip.
+    return ["--js-runtimes", ",".join(parts)]
 
 
 def _probe_ytdlp_js_challenge(node_bin: str) -> None:
@@ -316,66 +323,126 @@ def _probe_ytdlp_js_challenge(node_bin: str) -> None:
         logger.error("yt-dlp-ejs not importable — pip install failed?")
         return
 
+    # Быстрая проверка, что node --permission (как у yt-dlp) жив
+    if node_bin and Path(node_bin).is_file():
+        try:
+            proc_n = subprocess.run(
+                [node_bin, "--permission", "-e", "console.log('perm-ok')"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if "perm-ok" not in (proc_n.stdout or ""):
+                logger.error(
+                    "node --permission broken: rc=%s out=%s err=%s",
+                    proc_n.returncode,
+                    (proc_n.stdout or "")[:120],
+                    (proc_n.stderr or "")[:200],
+                )
+            else:
+                logger.info("node --permission OK")
+        except Exception as exc:  # noqa: BLE001
+            logger.error("node --permission test failed: %s", exc)
+
     vid = "https://www.youtube.com/watch?v=jNQXAC9IVRw"  # короткий публичный ролик
-    cmd = [sys.executable, "-m", "yt_dlp"]
-    cmd.extend(_js_runtime_args(node_bin=node_bin, deno_bin=deno_bin))
-    cmd.extend(["--force-ipv4", "--no-download", "-F", vid])
-    proxy = (os.environ.get("YTDLP_PROXY") or os.environ.get("YTMUSIC_PROXY") or "").strip()
-    if proxy and proxy.lower() not in {"none", "off", "0", "false"}:
-        cmd.extend(["--proxy", proxy])
+    runtime = _js_runtime_args(node_bin=node_bin, deno_bin=deno_bin)
     cookies = Path(os.environ.get("DATA_DIR") or "/app/data") / "youtube_cookies.txt"
     if not cookies.is_file():
         cookies = Path("/app/data/youtube_cookies.txt")
+    proxy = (os.environ.get("YTDLP_PROXY") or os.environ.get("YTMUSIC_PROXY") or "").strip()
+    if proxy.lower() in {"none", "off", "0", "false"}:
+        proxy = ""
+
+    def _run_probe(label: str, *, use_proxy: bool, use_cookies: bool) -> str:
+        cmd = [sys.executable, "-m", "yt_dlp", "-v"]
+        cmd.extend(runtime)
+        cmd.extend(["--force-ipv4", "--no-download", "-F", vid])
+        if use_proxy and proxy:
+            cmd.extend(["--proxy", proxy])
+        if use_cookies and cookies.is_file():
+            cmd.extend(["--cookies", str(cookies)])
+        logger.info(
+            "yt-dlp EJS probe [%s] proxy=%s cookies=%s …",
+            label,
+            "yes" if (use_proxy and proxy) else "no",
+            "yes" if (use_cookies and cookies.is_file()) else "no",
+        )
+        env = os.environ.copy()
+        # только --proxy; env-прокси ломают child node/deno
+        for key in list(env):
+            if key.lower() in {
+                "http_proxy",
+                "https_proxy",
+                "all_proxy",
+                "no_proxy",
+                "http_proxy",
+            }:
+                env.pop(key, None)
+        try:
+            proc = subprocess.run(
+                cmd,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                env=env,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("yt-dlp EJS probe [%s] failed to run: %s", label, exc)
+            return ""
+        return (proc.stdout or "") + "\n" + (proc.stderr or "")
+
+    def _judge(label: str, out: str) -> bool:
+        low = out.lower()
+        jsc = " | ".join(
+            ln.strip()
+            for ln in out.splitlines()
+            if "jsc" in ln.lower() or "challenge" in ln.lower() or "JS runtime" in ln
+        )[:500]
+        if jsc:
+            logger.info("yt-dlp EJS probe [%s] jsc: %s", label, jsc)
+        if "solving js challenges" in low and "n challenge solving failed" not in low:
+            if re.search(r"(?m)^(?:18|91|92|93|94|95|96|140|251|395)\s+", out) or "m3u8" in low:
+                logger.info("yt-dlp EJS probe OK [%s]", label)
+                return True
+        if re.search(r"(?m)^(?:18|91|92|93|94|95|96|140|251|395)\s+", out):
+            logger.info("yt-dlp EJS probe OK [%s] (formats present)", label)
+            return True
+        if "sign in to confirm" in low:
+            logger.warning("yt-dlp EJS probe [%s]: bot-check", label)
+            return False
+        if "n challenge solving failed" in low or "only images are available" in low:
+            logger.error(
+                "yt-dlp EJS BROKEN [%s] tail=%s",
+                label,
+                out[-500:].replace("\n", " | "),
+            )
+            return False
+        logger.warning(
+            "yt-dlp EJS probe [%s] inconclusive tail=%s",
+            label,
+            out[-300:].replace("\n", " | "),
+        )
+        return False
+
+    # 1) cookies, без прокси — проверяем solver отдельно от Webshare
+    # 2) cookies + proxy — как в проде
+    ok = False
     if cookies.is_file():
-        cmd.extend(["--cookies", str(cookies)])
-
-    logger.info(
-        "yt-dlp EJS probe… node=%s deno=%s",
-        node_bin or "-",
-        deno_bin or "-",
-    )
-    try:
-        proc = subprocess.run(
-            cmd,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            env=os.environ.copy(),
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.error("yt-dlp EJS probe failed to run: %s", exc)
-        return
-
-    out = (proc.stdout or "") + "\n" + (proc.stderr or "")
-    low = out.lower()
-    if "solving js challenges" in low and (
-        "n challenge solving failed" not in low and "only images are available" not in low
-    ):
-        # даже без списка форматов в -F stdout — challenge прошёл
-        if re.search(r"(?m)^(?:18|91|92|93|94|95|96|140|251|395)\s+", out) or "m3u8" in low:
-            logger.info("yt-dlp EJS probe OK (challenge solved, formats present)")
-            return
-    if "n challenge solving failed" in low or "only images are available" in low:
+        ok = _judge("cookies-noproxy", _run_probe("cookies-noproxy", use_proxy=False, use_cookies=True)) or ok
+    ok = _judge(
+        "cookies-proxy" if cookies.is_file() else "proxy-only",
+        _run_probe(
+            "cookies-proxy" if cookies.is_file() else "proxy-only",
+            use_proxy=True,
+            use_cookies=cookies.is_file(),
+        ),
+    ) or ok
+    if not ok:
         logger.error(
-            "yt-dlp EJS BROKEN on this host — YouTube вернёт только storyboard. "
-            "node=%s deno=%s tail=%s",
-            node_bin or "-",
-            deno_bin or "-",
-            out[-500:].replace("\n", " | "),
+            "yt-dlp EJS still broken after probes — downloads will fail until solver works"
         )
-        return
-    if "sign in to confirm" in low:
-        logger.warning("yt-dlp EJS probe: bot-check (cookies/proxy), JS runtime may still be ok")
-        return
-    if re.search(r"(?m)^(?:18|91|92|93|94|95|96|140|251|395)\s+", out):
-        logger.info("yt-dlp EJS probe OK (real formats present)")
-        return
-    logger.warning(
-        "yt-dlp EJS probe inconclusive exit=%s tail=%s",
-        proc.returncode,
-        out[-300:].replace("\n", " | "),
-    )
 
 
 def _ensure_pip_ffmpeg() -> None:
@@ -457,7 +524,7 @@ def ensure_system_deps() -> None:
         deno or "none",
         _which("tesseract") or "none",
     )
-    _probe_ytdlp_js_challenge(node)
+    # EJS probe — после cookies в bot.py (иначе ложный BROKEN без LOGIN)
 
 
 # публичный алиас для вызова после записи cookies из B64
