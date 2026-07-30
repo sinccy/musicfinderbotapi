@@ -9,19 +9,28 @@ import subprocess
 import sys
 import tarfile
 from pathlib import Path
+from typing import Optional
 from urllib.request import urlopen
 
 logger = logging.getLogger(__name__)
 
-NODE_VER = "20.18.0"
+# yt-dlp EJS: Node minimum is 22 (uses `node --permission`). Node 20 = challenge fail.
+NODE_VER = "22.23.2"
+NODE_MIN_MAJOR = 22
+DENO_VER = "2.9.4"
 _ARCH_SUFFIX = {
     "x86_64": "linux-x64",
     "aarch64": "linux-arm64",
     "arm64": "linux-arm64",
 }
+_DENO_ARCH = {
+    "x86_64": "x86_64-unknown-linux-gnu",
+    "aarch64": "aarch64-unknown-linux-gnu",
+    "arm64": "aarch64-unknown-linux-gnu",
+}
 _bootstrapped = False
 
-# /tmp на Docker/Bothost часто noexec — node оттуда не запускает EJS → только storyboard.
+# /tmp на Docker/Bothost часто noexec — бинарники только в /app/data.
 _NODE_INSTALL_ROOTS = (
     Path(os.environ.get("DATA_DIR") or "/app/data"),
     Path("/app/data"),
@@ -103,28 +112,47 @@ def _node_can_exec(bin_path: str) -> bool:
 
 
 def _preferred_node_bin() -> str:
-    """Сначала наш tarball в /app/data, потом PATH."""
-    folder = None
+    """Сначала наш tarball в /app/data (Node≥22), потом PATH."""
     machine = os.uname().machine
     suffix = _ARCH_SUFFIX.get(machine)
     if suffix:
         folder = f"node-v{NODE_VER}-{suffix}"
         for root in _NODE_INSTALL_ROOTS:
             candidate = root / folder / "bin" / "node"
-            if candidate.is_file() and _node_can_exec(str(candidate)):
+            if (
+                candidate.is_file()
+                and _node_major(str(candidate)) >= NODE_MIN_MAJOR
+                and _node_can_exec(str(candidate))
+            ):
                 return str(candidate)
     for name in ("node", "nodejs"):
         found = shutil.which(name)
-        if found and _node_major(found) >= 18 and _node_can_exec(found):
+        if (
+            found
+            and _node_major(found) >= NODE_MIN_MAJOR
+            and _node_can_exec(found)
+        ):
             return found
     return ""
 
 
+def _install_root() -> Optional[Path]:
+    for root in _NODE_INSTALL_ROOTS:
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            probe = root / ".write_test"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            return root
+        except OSError:
+            continue
+    return None
+
+
 def _install_node_tarball() -> str:
     """
-    yt-dlp-ejs нужен рабочий Node ≥18.
-    Без него YouTube отдаёт только storyboard → «Requested format is not available».
-    Всегда кладём свой tarball в /app/data (не /tmp: noexec). Apt-node — только fallback.
+    yt-dlp EJS требует Node ≥22 (`node --permission`).
+    Node 20 (apt на Bothost) → n challenge fail → только storyboard.
     """
     machine = os.uname().machine
     suffix = _ARCH_SUFFIX.get(machine)
@@ -132,30 +160,25 @@ def _install_node_tarball() -> str:
         logger.warning("Node.js tarball: unsupported arch %s", machine)
         return _preferred_node_bin() or _which("node", "nodejs")
 
-    folder = f"node-v{NODE_VER}-{suffix}"
-    install_root = None
-    for root in _NODE_INSTALL_ROOTS:
-        try:
-            root.mkdir(parents=True, exist_ok=True)
-            probe = root / ".write_test"
-            probe.write_text("ok", encoding="utf-8")
-            probe.unlink(missing_ok=True)
-            install_root = root
-            break
-        except OSError:
-            continue
+    install_root = _install_root()
     if install_root is None:
         logger.error("Cannot write Node.js under /app/data — EJS will fail")
         return _preferred_node_bin() or _which("node", "nodejs")
 
+    folder = f"node-v{NODE_VER}-{suffix}"
     node_bin = install_root / folder / "bin" / "node"
-    if node_bin.is_file() and _node_can_exec(str(node_bin)):
+    if (
+        node_bin.is_file()
+        and _node_major(str(node_bin)) >= NODE_MIN_MAJOR
+        and _node_can_exec(str(node_bin))
+    ):
         bin_dir = str(node_bin.parent)
         os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
         os.environ["YTDLP_NODE"] = str(node_bin)
         logger.info("Node.js ok (cached): %s (v%s)", node_bin, _node_major(str(node_bin)))
         return str(node_bin)
 
+    # старый Node 20 в /app/data больше не подходит — качаем 22
     url = f"https://nodejs.org/dist/v{NODE_VER}/{folder}.tar.xz"
     archive = install_root / f"{folder}.tar.xz"
     logger.info("Downloading Node.js %s → %s …", NODE_VER, install_root)
@@ -193,13 +216,99 @@ def _install_node_tarball() -> str:
     return _preferred_node_bin() or _which("node", "nodejs")
 
 
+def _install_deno() -> str:
+    """Deno — recommended runtime для yt-dlp EJS (≥2.3)."""
+    env_deno = (os.environ.get("YTDLP_DENO") or "").strip()
+    if env_deno and Path(env_deno).is_file():
+        return env_deno
+    install_root = _install_root()
+    if install_root is None:
+        return shutil.which("deno") or ""
+    deno_bin = install_root / "deno" / "deno"
+    if deno_bin.is_file():
+        try:
+            deno_bin.chmod(deno_bin.stat().st_mode | 0o111)
+        except OSError:
+            pass
+        try:
+            subprocess.check_output([str(deno_bin), "-V"], timeout=10, text=True)
+            os.environ["YTDLP_DENO"] = str(deno_bin)
+            os.environ["PATH"] = str(deno_bin.parent) + os.pathsep + os.environ.get(
+                "PATH", ""
+            )
+            logger.info("Deno ok (cached): %s", deno_bin)
+            return str(deno_bin)
+        except Exception:  # noqa: BLE001
+            pass
+
+    machine = os.uname().machine
+    arch = _DENO_ARCH.get(machine)
+    if not arch:
+        return shutil.which("deno") or ""
+    url = (
+        f"https://github.com/denoland/deno/releases/download/"
+        f"v{DENO_VER}/deno-{arch}.zip"
+    )
+    archive = install_root / f"deno-{DENO_VER}.zip"
+    logger.info("Downloading Deno %s → %s …", DENO_VER, install_root)
+    try:
+        import zipfile
+
+        with urlopen(url, timeout=180) as resp, archive.open("wb") as out:
+            shutil.copyfileobj(resp, out)
+        dest = install_root / "deno"
+        dest.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(archive, "r") as zf:
+            zf.extractall(dest)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Deno download failed (node-only fallback): %s", exc)
+        return shutil.which("deno") or ""
+    finally:
+        archive.unlink(missing_ok=True)
+
+    if deno_bin.is_file():
+        try:
+            deno_bin.chmod(deno_bin.stat().st_mode | 0o111)
+        except OSError:
+            pass
+        os.environ["YTDLP_DENO"] = str(deno_bin)
+        os.environ["PATH"] = str(deno_bin.parent) + os.pathsep + os.environ.get(
+            "PATH", ""
+        )
+        logger.info("Deno active: %s", deno_bin)
+        return str(deno_bin)
+    return shutil.which("deno") or ""
+
+
+def _js_runtime_args(node_bin: str = "", deno_bin: str = "") -> list[str]:
+    parts: list[str] = []
+    deno_bin = deno_bin or (os.environ.get("YTDLP_DENO") or "").strip()
+    node_bin = node_bin or (os.environ.get("YTDLP_NODE") or "").strip()
+    if deno_bin and Path(deno_bin).is_file():
+        parts.append(f"deno:{deno_bin}")
+    if node_bin and Path(node_bin).is_file():
+        parts.append(f"node:{node_bin}")
+    if not parts:
+        return []
+    # ejs:github — запасной канал скриптов; ejs:npm работает с deno
+    return [
+        "--js-runtimes",
+        ",".join(parts),
+        "--remote-components",
+        "ejs:github",
+        "--remote-components",
+        "ejs:npm",
+    ]
+
+
 def _probe_ytdlp_js_challenge(node_bin: str) -> None:
     """
     Один раз при старте: без рабочего EJS скачивание всегда даст format not available.
     Не качаем файл — только list formats.
     """
-    if not node_bin:
-        logger.error("yt-dlp EJS probe skipped: no node")
+    deno_bin = (os.environ.get("YTDLP_DENO") or "").strip()
+    if not node_bin and not deno_bin:
+        logger.error("yt-dlp EJS probe skipped: no node/deno")
         return
     try:
         import yt_dlp_ejs  # type: ignore  # noqa: F401
@@ -208,17 +317,9 @@ def _probe_ytdlp_js_challenge(node_bin: str) -> None:
         return
 
     vid = "https://www.youtube.com/watch?v=jNQXAC9IVRw"  # короткий публичный ролик
-    cmd = [
-        sys.executable,
-        "-m",
-        "yt_dlp",
-        "--js-runtimes",
-        f"node:{node_bin}",
-        "--force-ipv4",
-        "--no-download",
-        "-F",
-        vid,
-    ]
+    cmd = [sys.executable, "-m", "yt_dlp"]
+    cmd.extend(_js_runtime_args(node_bin=node_bin, deno_bin=deno_bin))
+    cmd.extend(["--force-ipv4", "--no-download", "-F", vid])
     proxy = (os.environ.get("YTDLP_PROXY") or os.environ.get("YTMUSIC_PROXY") or "").strip()
     if proxy and proxy.lower() not in {"none", "off", "0", "false"}:
         cmd.extend(["--proxy", proxy])
@@ -228,14 +329,18 @@ def _probe_ytdlp_js_challenge(node_bin: str) -> None:
     if cookies.is_file():
         cmd.extend(["--cookies", str(cookies)])
 
-    logger.info("yt-dlp EJS probe…")
+    logger.info(
+        "yt-dlp EJS probe… node=%s deno=%s",
+        node_bin or "-",
+        deno_bin or "-",
+    )
     try:
         proc = subprocess.run(
             cmd,
             check=False,
             capture_output=True,
             text=True,
-            timeout=90,
+            timeout=120,
             env=os.environ.copy(),
         )
     except Exception as exc:  # noqa: BLE001
@@ -244,19 +349,26 @@ def _probe_ytdlp_js_challenge(node_bin: str) -> None:
 
     out = (proc.stdout or "") + "\n" + (proc.stderr or "")
     low = out.lower()
+    if "solving js challenges" in low and (
+        "n challenge solving failed" not in low and "only images are available" not in low
+    ):
+        # даже без списка форматов в -F stdout — challenge прошёл
+        if re.search(r"(?m)^(?:18|91|92|93|94|95|96|140|251|395)\s+", out) or "m3u8" in low:
+            logger.info("yt-dlp EJS probe OK (challenge solved, formats present)")
+            return
     if "n challenge solving failed" in low or "only images are available" in low:
         logger.error(
             "yt-dlp EJS BROKEN on this host — YouTube вернёт только storyboard. "
-            "node=%s tail=%s",
-            node_bin,
-            out[-400:].replace("\n", " | "),
+            "node=%s deno=%s tail=%s",
+            node_bin or "-",
+            deno_bin or "-",
+            out[-500:].replace("\n", " | "),
         )
         return
     if "sign in to confirm" in low:
         logger.warning("yt-dlp EJS probe: bot-check (cookies/proxy), JS runtime may still be ok")
         return
-    # любой не-storyboard формат
-    if re.search(r"(?m)^(?:18|91|92|93|94|95|96|140|251)\s+", out):
+    if re.search(r"(?m)^(?:18|91|92|93|94|95|96|140|251|395)\s+", out):
         logger.info("yt-dlp EJS probe OK (real formats present)")
         return
     logger.warning(
@@ -277,8 +389,8 @@ def _ensure_pip_ffmpeg() -> None:
 
 
 def _upgrade_ytdlp() -> None:
-    """Свежий yt-dlp + ejs + curl_cffi — иначе только images / bot-check."""
-    logger.info("Upgrading yt-dlp + yt-dlp-ejs + curl_cffi…")
+    """Свежий yt-dlp[default] + ejs + curl_cffi — иначе только images / bot-check."""
+    logger.info("Upgrading yt-dlp[default] + yt-dlp-ejs + curl_cffi…")
     subprocess.run(
         [
             sys.executable,
@@ -287,7 +399,7 @@ def _upgrade_ytdlp() -> None:
             "install",
             "-q",
             "-U",
-            "yt-dlp",
+            "yt-dlp[default]",
             "yt-dlp-ejs",
             "curl_cffi",
         ],
@@ -301,8 +413,13 @@ def _upgrade_ytdlp() -> None:
         pass
     try:
         import yt_dlp_ejs  # type: ignore  # noqa: F401
+        from pathlib import Path as _P
 
-        logger.info("yt-dlp-ejs=ok")
+        solver = _P(yt_dlp_ejs.__file__).parent / "yt" / "solver" / "core.min.js"
+        logger.info(
+            "yt-dlp-ejs=ok solver=%s",
+            "yes" if solver.is_file() else f"MISSING ({solver})",
+        )
     except Exception:  # noqa: BLE001
         logger.warning("yt-dlp-ejs missing — YouTube formats may fail")
 
@@ -319,16 +436,25 @@ def ensure_system_deps() -> None:
     if need_ffmpeg or need_node or need_tesseract:
         logger.info("Bothost: installing system deps (ffmpeg, nodejs, tesseract)…")
         _install_apt_packages()
+    deno = _install_deno()
     node = _install_node_tarball()
     _ensure_pip_ffmpeg()
     _upgrade_ytdlp()
     node = node or _preferred_node_bin() or _which("node", "nodejs") or ""
     node_ver = _node_major(node) if node else 0
+    if node and node_ver < NODE_MIN_MAJOR:
+        logger.error(
+            "Node.js v%s < %s — yt-dlp EJS will FAIL (need Node≥22). path=%s",
+            node_ver,
+            NODE_MIN_MAJOR,
+            node,
+        )
     logger.info(
-        "Deps: ffmpeg=%s node=%s (v%s) tesseract=%s",
+        "Deps: ffmpeg=%s node=%s (v%s) deno=%s tesseract=%s",
         _which("ffmpeg") or "none",
         node or "none",
         node_ver or "?",
+        deno or "none",
         _which("tesseract") or "none",
     )
     _probe_ytdlp_js_challenge(node)
@@ -337,3 +463,4 @@ def ensure_system_deps() -> None:
 # публичный алиас для вызова после записи cookies из B64
 probe_ytdlp_js_challenge = _probe_ytdlp_js_challenge
 preferred_node_bin = _preferred_node_bin
+js_runtime_args = _js_runtime_args

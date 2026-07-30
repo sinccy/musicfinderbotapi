@@ -3944,14 +3944,18 @@ async def main() -> None:
         else "no"
     )
     node_path = _node_bin() or "none"
+    from download import _deno_bin
+
+    deno_path = _deno_bin() or "none"
     logger.info(
-        "yt-dlp cookies=%s source=%s size=%s logged_in=%s b64_env=%s node=%s ffmpeg=%s proxy=%s",
+        "yt-dlp cookies=%s source=%s size=%s logged_in=%s b64_env=%s node=%s deno=%s ffmpeg=%s proxy=%s",
         ck["path"] or "none",
         ck["source"],
         ck["size"] or "-",
         cookie_login,
         "yes" if ck["b64_env_set"] else "no",
         node_path,
+        deno_path,
         shutil.which("ffmpeg") or "none",
         "yes" if YTMUSIC_PROXY else "no",
     )

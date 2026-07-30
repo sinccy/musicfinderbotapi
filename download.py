@@ -2649,17 +2649,26 @@ async def _resolve_best_youtube(
 
 
 def _node_bin() -> Optional[str]:
-    """Абсолютный путь к Node для yt-dlp EJS (не /tmp — там noexec)."""
+    """Абсолютный путь к Node ≥22 для yt-dlp EJS."""
     env_node = (os.environ.get("YTDLP_NODE") or "").strip()
     if env_node and Path(env_node).is_file():
         return env_node
     data = Path(os.environ.get("DATA_DIR") or "/app/data")
-    for pattern in ("node-v*/bin/node",):
-        matches = sorted(data.glob(pattern), reverse=True)
-        for cand in matches:
-            if cand.is_file():
-                return str(cand)
+    for cand in sorted(data.glob("node-v*/bin/node"), reverse=True):
+        if cand.is_file():
+            return str(cand)
     return shutil.which("node") or shutil.which("nodejs")
+
+
+def _deno_bin() -> Optional[str]:
+    env_deno = (os.environ.get("YTDLP_DENO") or "").strip()
+    if env_deno and Path(env_deno).is_file():
+        return env_deno
+    data = Path(os.environ.get("DATA_DIR") or "/app/data")
+    cand = data / "deno" / "deno"
+    if cand.is_file():
+        return str(cand)
+    return shutil.which("deno")
 
 
 # Telegram ~48 МБ ≈ ~25–30 мин MP3; длинные миксы не отправляются
@@ -2692,17 +2701,36 @@ def _cookies_look_logged_in(path: str) -> bool:
 
 
 def _ytdlp_auth_args(*, use_cookies: bool = True) -> list[str]:
-    """Cookies / JS runtime — без этого YouTube часто требует Sign in."""
+    """Cookies / JS runtime — без EJS YouTube отдаёт только storyboard."""
     args: list[str] = []
-    node = _node_bin()
-    if node:
-        args.extend(["--js-runtimes", f"node:{node}"])
-        # pip-пакет yt-dlp-ejs уже в образе; ejs:github с Bothost часто недоступен
-        # и тогда остаются только storyboard → «Requested format is not available».
-    else:
-        logger.warning(
-            "node not found — YouTube может не отдать аудио (Requested format…)"
+    try:
+        from bootstrap import js_runtime_args
+
+        runtime = js_runtime_args(
+            node_bin=_node_bin() or "",
+            deno_bin=_deno_bin() or "",
         )
+        if runtime:
+            args.extend(runtime)
+        else:
+            logger.warning(
+                "no node/deno — YouTube может не отдать аудио (Requested format…)"
+            )
+    except Exception:  # noqa: BLE001
+        node = _node_bin()
+        deno = _deno_bin()
+        parts: list[str] = []
+        if deno:
+            parts.append(f"deno:{deno}")
+        if node:
+            parts.append(f"node:{node}")
+        if parts:
+            args.extend(["--js-runtimes", ",".join(parts)])
+            args.extend(["--remote-components", "ejs:github"])
+        else:
+            logger.warning(
+                "no node/deno — YouTube может не отдать аудио (Requested format…)"
+            )
     # НЕ использовать --impersonate вместе с cookies: на VPS/proxy даёт вечный bot-check
     if use_cookies:
         if YTDLP_COOKIES_FILE and Path(YTDLP_COOKIES_FILE).is_file():
