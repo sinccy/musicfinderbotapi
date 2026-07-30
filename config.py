@@ -54,56 +54,66 @@ def _decode_cookies_b64(b64: str) -> tuple[bytes | None, str]:
 def _resolve_ytdlp_cookies_file() -> str:
     """
     Путь к cookies.txt для yt-dlp.
-    На сервере (Bothost) нет Chrome — только файл или YTDLP_COOKIES_B64.
+    Приоритет: явный файл → YTDLP_COOKIES_B64 (перезаписывает /app/data) → default paths.
+    Важно: старый youtube_cookies.txt НЕ должен блокировать новый B64.
     """
     global _last_cookies_error
 
     explicit = _get("YTDLP_COOKIES_FILE") or _get("YOUTUBE_COOKIES_FILE")
-    if explicit and Path(explicit).is_file():
+    # Явный путь только если это НЕ наш auto-файл из B64
+    if (
+        explicit
+        and Path(explicit).is_file()
+        and not explicit.rstrip("/").endswith("youtube_cookies.txt")
+    ):
         return explicit
+
+    b64 = _get("YTDLP_COOKIES_B64")
+    if b64:
+        # Bothost: слишком длинный env → "argument list too long"
+        if len(b64) > 25_000:
+            _last_cookies_error = (
+                f"YTDLP_COOKIES_B64 too large ({len(b64)} chars). "
+                "Use ./export_yt_cookies.sh or upload /app/data/cookies.txt."
+            )
+            logger.error("%s", _last_cookies_error)
+        else:
+            data_dir = Path(_get("DATA_DIR") or "/app/data")
+            try:
+                data_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                logger.warning(
+                    "cannot create DATA_DIR %s: %s — using /tmp", data_dir, exc
+                )
+                data_dir = Path("/tmp")
+
+            target = data_dir / "youtube_cookies.txt"
+            raw, err = _decode_cookies_b64(b64)
+            if raw is None:
+                _last_cookies_error = err or "YTDLP_COOKIES_B64 decode failed"
+                logger.warning("YTDLP_COOKIES_B64 invalid: %s", _last_cookies_error)
+            else:
+                try:
+                    target.write_bytes(raw)
+                    logger.info(
+                        "wrote yt-dlp cookies from B64 → %s (%d bytes)",
+                        target,
+                        len(raw),
+                    )
+                    _last_cookies_error = ""
+                    return str(target)
+                except OSError as exc:
+                    _last_cookies_error = f"cannot write cookies: {exc}"
+                    logger.warning("%s", _last_cookies_error)
 
     for candidate in _DEFAULT_COOKIE_PATHS:
         if Path(candidate).is_file():
             logger.info("yt-dlp cookies found at default path %s", candidate)
             return candidate
 
-    b64 = _get("YTDLP_COOKIES_B64")
-    if not b64:
-        return explicit or ""
-
-    # Bothost: слишком длинный env → "argument list too long" и бот не стартует
-    if len(b64) > 20_000:
-        _last_cookies_error = (
-            f"YTDLP_COOKIES_B64 too large ({len(b64)} chars). "
-            "Use compact export (./export_yt_cookies.sh) or upload "
-            "/app/data/cookies.txt and remove YTDLP_COOKIES_B64."
-        )
-        logger.error("%s", _last_cookies_error)
-        return explicit or ""
-
-    data_dir = Path(_get("DATA_DIR") or "/app/data")
-    try:
-        data_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        logger.warning("cannot create DATA_DIR %s: %s — using /tmp", data_dir, exc)
-        data_dir = Path("/tmp")
-
-    target = data_dir / "youtube_cookies.txt"
-    raw, err = _decode_cookies_b64(b64)
-    if raw is None:
-        _last_cookies_error = err or "YTDLP_COOKIES_B64 decode failed"
-        logger.warning("YTDLP_COOKIES_B64 invalid: %s", _last_cookies_error)
-        return explicit or ""
-
-    try:
-        target.write_bytes(raw)
-        logger.info("wrote yt-dlp cookies to %s (%d bytes)", target, len(raw))
-        _last_cookies_error = ""
-        return str(target)
-    except OSError as exc:
-        _last_cookies_error = f"cannot write cookies: {exc}"
-        logger.warning("%s", _last_cookies_error)
-        return explicit or ""
+    if explicit and Path(explicit).is_file():
+        return explicit
+    return explicit or ""
 
 
 def _resolve_ytdlp_cookies_from_browser(cookies_file: str) -> str:
