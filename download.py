@@ -909,9 +909,10 @@ async def download_track(
                 )
 
         raise DownloadError(
-            "Не удалось скачать аудио с YouTube (формат недоступен с сервера). "
-            "Обновите cookies (YTDLP_COOKIES_B64) свежим экспортом из Chrome "
-            "или пришлите ссылку на ролик."
+            "Не удалось скачать аудио с YouTube: на сервере не решается JS-challenge "
+            "(EJS/Node) — YouTube отдаёт только картинки вместо аудио. "
+            "Перезапустите бота и проверьте лог старта: «yt-dlp EJS probe OK». "
+            "Если там BROKEN — напишите в чат (это не cookies)."
         )
     except DownloadError:
         raise
@@ -2648,6 +2649,16 @@ async def _resolve_best_youtube(
 
 
 def _node_bin() -> Optional[str]:
+    """Абсолютный путь к Node для yt-dlp EJS (не /tmp — там noexec)."""
+    env_node = (os.environ.get("YTDLP_NODE") or "").strip()
+    if env_node and Path(env_node).is_file():
+        return env_node
+    data = Path(os.environ.get("DATA_DIR") or "/app/data")
+    for pattern in ("node-v*/bin/node",):
+        matches = sorted(data.glob(pattern), reverse=True)
+        for cand in matches:
+            if cand.is_file():
+                return str(cand)
     return shutil.which("node") or shutil.which("nodejs")
 
 
@@ -2726,7 +2737,6 @@ def _build_ytdlp_cmd(
         "--ignore-errors",
         "--max-downloads",
         "1",
-        "--no-warnings",
         "--newline",
         "--progress",
         "--no-playlist",
@@ -2919,9 +2929,13 @@ async def _download_ytdlp_async(
         raise DownloadError(f"YouTube требует вход (антибот). {hint}")
     if saw_format_without_auth:
         logger.warning(
-            "yt-dlp: cookies ok but no usable formats (node/ejs/proxy). last=%s",
-            joined[-300:],
+            "yt-dlp: cookies ok but no usable formats (EJS/node broken?). last=%s",
+            joined[-500:],
         )
+        if "n challenge" in joined.lower() or "only images" in joined.lower():
+            logger.error(
+                "Confirmed: JS challenge failed — Node/EJS not working on this host"
+            )
     elif _ytdlp_retryable(joined):
         logger.warning("yt-dlp all profiles failed (format): %s", joined[-300:])
     return None

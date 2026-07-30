@@ -3936,13 +3936,14 @@ async def main() -> None:
 
     refresh_ytdlp_cookies()
     ck = ytdlp_cookies_status()
-    from download import _cookies_look_logged_in
+    from download import _cookies_look_logged_in, _node_bin
 
     cookie_login = (
         "yes"
         if ck["path"] and _cookies_look_logged_in(str(ck["path"]))
         else "no"
     )
+    node_path = _node_bin() or "none"
     logger.info(
         "yt-dlp cookies=%s source=%s size=%s logged_in=%s b64_env=%s node=%s ffmpeg=%s proxy=%s",
         ck["path"] or "none",
@@ -3950,7 +3951,7 @@ async def main() -> None:
         ck["size"] or "-",
         cookie_login,
         "yes" if ck["b64_env_set"] else "no",
-        shutil.which("node") or shutil.which("nodejs") or "none",
+        node_path,
         shutil.which("ffmpeg") or "none",
         "yes" if YTMUSIC_PROXY else "no",
     )
@@ -3969,6 +3970,13 @@ async def main() -> None:
         logger.warning(
             "YouTube cookies не заданы — скачивание может падать с антиботом"
         )
+
+    try:
+        from bootstrap import probe_ytdlp_js_challenge
+
+        probe_ytdlp_js_challenge(node_path if node_path != "none" else "")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("yt-dlp EJS probe error: %s", exc)
 
     session = None
     if TELEGRAM_PROXY:
