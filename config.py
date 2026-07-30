@@ -71,6 +71,16 @@ def _resolve_ytdlp_cookies_file() -> str:
     if not b64:
         return explicit or ""
 
+    # Bothost: слишком длинный env → "argument list too long" и бот не стартует
+    if len(b64) > 20_000:
+        _last_cookies_error = (
+            f"YTDLP_COOKIES_B64 too large ({len(b64)} chars). "
+            "Use compact export (./export_yt_cookies.sh) or upload "
+            "/app/data/cookies.txt and remove YTDLP_COOKIES_B64."
+        )
+        logger.error("%s", _last_cookies_error)
+        return explicit or ""
+
     data_dir = Path(_get("DATA_DIR") or "/app/data")
     try:
         data_dir.mkdir(parents=True, exist_ok=True)
