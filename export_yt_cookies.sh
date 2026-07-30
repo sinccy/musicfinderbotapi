@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # Компактный cookies.txt только для YouTube (чтобы влезло в Bothost env).
+# Использование:
+#   ./export_yt_cookies.sh
+#   ./export_yt_cookies.sh ~/Downloads/yt_cookies_full.txt
 set -euo pipefail
 cd "$(dirname "$0")"
 
-OUT="${1:-$HOME/Downloads/yt_cookies_compact.txt}"
+OUT="$HOME/Downloads/yt_cookies_compact.txt"
+SRC="${1:-}"
 TMP="$(mktemp)"
 
 if [[ -x .venv/bin/python ]]; then
@@ -12,21 +16,36 @@ else
   PY=python3
 fi
 
-"$PY" -m yt_dlp \
-  --cookies-from-browser chrome \
-  --cookies "$TMP" \
-  --skip-download \
-  --no-playlist \
-  --ignore-no-formats-error \
-  "https://www.youtube.com/watch?v=jNQXAC9IVRw" >/dev/null 2>&1 || true
+if [[ -n "$SRC" && -f "$SRC" ]]; then
+  cp "$SRC" "$TMP"
+elif [[ -f "$HOME/Downloads/yt_cookies_full.txt" ]]; then
+  echo "Using existing ~/Downloads/yt_cookies_full.txt"
+  cp "$HOME/Downloads/yt_cookies_full.txt" "$TMP"
+else
+  echo "Extracting cookies from Chrome…"
+  "$PY" -m yt_dlp \
+    --cookies-from-browser chrome \
+    --cookies "$TMP" \
+    --skip-download \
+    --no-playlist \
+    --ignore-no-formats-error \
+    "https://www.youtube.com/watch?v=jNQXAC9IVRw" || true
+fi
 
-# Оставляем только youtube/google auth cookies
 "$PY" - <<PY
 from pathlib import Path
 src = Path("$TMP")
 dst = Path("$OUT")
 if not src.is_file() or src.stat().st_size < 50:
-    raise SystemExit("cookies not written — открой Chrome, зайди на youtube.com и повтори")
+    raise SystemExit(
+        "cookies not written.\n"
+        "Сначала:\n"
+        "  .venv/bin/python -m yt_dlp --cookies-from-browser chrome "
+        "--cookies ~/Downloads/yt_cookies_full.txt --skip-download --no-playlist "
+        "--ignore-no-formats-error "
+        "'https://www.youtube.com/watch?v=jNQXAC9IVRw'\n"
+        "Потом снова: ./export_yt_cookies.sh"
+    )
 
 keep_names = {
     "SID", "HSID", "SSID", "APISID", "SAPISID",
@@ -34,7 +53,8 @@ keep_names = {
     "__Secure-1PSIDTS", "__Secure-3PSIDTS",
     "__Secure-1PAPISID", "__Secure-3PAPISID",
     "LOGIN_INFO", "PREF", "CONSENT",
-    "VISITOR_INFO1_LIVE", "YSC", "SIDCC", "__Secure-1PSIDCC", "__Secure-3PSIDCC",
+    "VISITOR_INFO1_LIVE", "YSC", "SIDCC",
+    "__Secure-1PSIDCC", "__Secure-3PSIDCC",
 }
 keep_domains = ("youtube.com", "google.com", "youtu.be")
 lines_out = ["# Netscape HTTP Cookie File", "# compact youtube export", ""]
@@ -63,5 +83,5 @@ base64 -i "$OUT" | tr -d '\n' | pbcopy
 B64_LEN=$(base64 -i "$OUT" | tr -d '\n' | wc -c | tr -d ' ')
 echo "OK: base64 в буфере (${B64_LEN} символов). Вставь в YTDLP_COOKIES_B64"
 if [[ "$B64_LEN" -gt 12000 ]]; then
-  echo "WARNING: всё ещё длинно для Bothost env — лучше загрузи файл в /app/data/cookies.txt"
+  echo "WARNING: длинно для Bothost — загрузи файл /app/data/cookies.txt без B64"
 fi
