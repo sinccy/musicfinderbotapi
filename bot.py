@@ -3477,16 +3477,17 @@ async def on_callback(callback: CallbackQuery, bot: Bot, state: FSMContext) -> N
         await callback.answer("Загружаю…")
         if msg and track_id:
             try:
-                # найти трек в сессиях
+                # найти трек в сессиях (singles бывает смесь TrackCandidate + AlbumCandidate)
                 track: Optional[TrackCandidate] = None
                 for sess in _album_sessions.values():
                     for t in sess.get("singles") or []:
-                        if t.track_id == track_id:
-                            track = t
+                        tid = str(getattr(t, "track_id", "") or "").strip()
+                        if tid and tid == track_id:
+                            track = t  # type: ignore[assignment]
                             break
                     if track:
                         break
-                if track:
+                if track and getattr(track, "track_name", None):
                     await _send_track_result(
                         msg,
                         artist=track.artist_name,
