@@ -3936,16 +3936,30 @@ async def main() -> None:
 
     refresh_ytdlp_cookies()
     ck = ytdlp_cookies_status()
+    from download import _cookies_look_logged_in
+
+    cookie_login = (
+        "yes"
+        if ck["path"] and _cookies_look_logged_in(str(ck["path"]))
+        else "no"
+    )
     logger.info(
-        "yt-dlp cookies=%s source=%s size=%s b64_env=%s node=%s ffmpeg=%s proxy=%s",
+        "yt-dlp cookies=%s source=%s size=%s logged_in=%s b64_env=%s node=%s ffmpeg=%s proxy=%s",
         ck["path"] or "none",
         ck["source"],
         ck["size"] or "-",
+        cookie_login,
         "yes" if ck["b64_env_set"] else "no",
         shutil.which("node") or shutil.which("nodejs") or "none",
         shutil.which("ffmpeg") or "none",
         "yes" if YTMUSIC_PROXY else "no",
     )
+    if ck["path"] and cookie_login == "no":
+        logger.warning(
+            "YouTube cookies без LOGIN_INFO/SID — экспорт неполный. "
+            "На Mac: yt-dlp --cookies-from-browser chrome --cookies cookies.txt "
+            "--skip-download https://www.youtube.com && base64 -i cookies.txt | pbcopy"
+        )
     if ck["b64_env_set"] and not ck["path"]:
         logger.warning(
             "YTDLP_COOKIES_B64 задан, но cookies не созданы: %s",

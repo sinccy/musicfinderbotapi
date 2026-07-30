@@ -9,6 +9,8 @@ cachetools==5.5.2
 lxml==5.3.1
 beautifulsoup4==4.12.3
 yt-dlp>=2025.10.14
+yt-dlp-ejs>=0.8.0
+curl_cffi>=0.13.0
 yandex-music>=2.2.0
 ytmusicapi>=1.7.0
 pydub>=0.25.1

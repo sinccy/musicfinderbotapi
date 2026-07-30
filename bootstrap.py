@@ -103,10 +103,20 @@ def _ensure_pip_ffmpeg() -> None:
 
 
 def _upgrade_ytdlp() -> None:
-    """Свежий yt-dlp критичен: старый не видит аудиоформаты YouTube."""
-    logger.info("Upgrading yt-dlp…")
+    """Свежий yt-dlp + ejs + curl_cffi — иначе только images / bot-check."""
+    logger.info("Upgrading yt-dlp + yt-dlp-ejs + curl_cffi…")
     subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-q", "-U", "yt-dlp"],
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "-q",
+            "-U",
+            "yt-dlp",
+            "yt-dlp-ejs",
+            "curl_cffi",
+        ],
         check=False,
     )
     try:
@@ -115,6 +125,12 @@ def _upgrade_ytdlp() -> None:
         logger.info("yt-dlp version=%s", ytdlp_ver)
     except Exception:  # noqa: BLE001
         pass
+    try:
+        import yt_dlp_ejs  # type: ignore  # noqa: F401
+
+        logger.info("yt-dlp-ejs=ok")
+    except Exception:  # noqa: BLE001
+        logger.warning("yt-dlp-ejs missing — YouTube formats may fail")
 
 
 def ensure_system_deps() -> None:

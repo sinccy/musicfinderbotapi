@@ -2670,20 +2670,43 @@ def _ytdlp_download_proxy(use_proxy: bool | None) -> str:
     return (YTMUSIC_PROXY or "").strip()
 
 
+def _cookies_look_logged_in(path: str) -> bool:
+    """Грубый чек: есть ли login-cookies YouTube (не только PREF)."""
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+    markers = ("LOGIN_INFO", "SID", "__Secure-1PSID", "SAPISID", "APISID")
+    return sum(1 for m in markers if m in text) >= 2
+
+
 def _ytdlp_auth_args(*, use_cookies: bool = True) -> list[str]:
     """Cookies / JS runtime — без этого YouTube часто требует Sign in."""
     args: list[str] = []
     node = _node_bin()
     if node:
         args.extend(["--js-runtimes", f"node:{node}"])
-        # EJS challenge solver (нужен для аудиоформатов на новых YouTube)
+        # EJS challenge solver (нужен для аудиоформатов / HLS)
         args.extend(["--remote-components", "ejs:github"])
     else:
         logger.warning(
             "node not found — YouTube может не отдать аудио (Requested format…)"
         )
+    # curl_cffi: меньше bot-check на VPS
+    try:
+        import curl_cffi  # type: ignore  # noqa: F401
+
+        args.extend(["--impersonate", "chrome"])
+    except Exception:  # noqa: BLE001
+        pass
     if use_cookies:
         if YTDLP_COOKIES_FILE and Path(YTDLP_COOKIES_FILE).is_file():
+            if not _cookies_look_logged_in(YTDLP_COOKIES_FILE):
+                logger.warning(
+                    "cookies file %s looks incomplete (no LOGIN_INFO/SID) — "
+                    "export again while logged into YouTube",
+                    YTDLP_COOKIES_FILE,
+                )
             args.extend(["--cookies", YTDLP_COOKIES_FILE])
         elif YTDLP_COOKIES_FROM_BROWSER:
             args.extend(["--cookies-from-browser", YTDLP_COOKIES_FROM_BROWSER])
@@ -2694,8 +2717,8 @@ def _build_ytdlp_cmd(
     search: str,
     outtmpl: str,
     *,
-    player_clients: str = "web_safari",
-    audio_format: str = "",
+    player_clients: str = "web_safari,mweb",
+    audio_format: str = "bestaudio/best",
     extract_mp3: bool | None = None,
     use_proxy: bool | None = True,
     use_cookies: bool = True,
@@ -2725,7 +2748,7 @@ def _build_ytdlp_cmd(
         or search.startswith("ytsearch")
     )
     if is_yt:
-        # пустой format = yt-dlp сам выберет
+        # bestaudio/best — на практике берёт HLS 96 когда DASH режется PO-token
         if audio_format:
             cmd.extend(["-f", audio_format])
         if player_clients:
@@ -2781,43 +2804,36 @@ def _ytdlp_retryable(joined_stderr: str) -> bool:
     )
 
 
-# Сначала US-proxy (NL VPS режет UMG). android/ios без cookies.
-# Без прокси — только в конце (часто UMG block в Европе).
+# Рабочий профиль (проверено): US-proxy + cookies + web_safari,mweb + ejs → HLS 96.
+# android с cookies yt-dlp пропускает; без cookies на proxy → bot-check.
 _YTDLP_PROFILES: tuple[dict[str, Any], ...] = (
+    {
+        "player_clients": "web_safari,mweb",
+        "audio_format": "bestaudio/best",
+        "extract_mp3": True,
+        "use_proxy": True,
+        "use_cookies": True,
+    },
+    {
+        "player_clients": "mweb,web_safari",
+        "audio_format": "96/bestaudio/best",
+        "extract_mp3": True,
+        "use_proxy": True,
+        "use_cookies": True,
+    },
+    {
+        "player_clients": "tv,web_safari",
+        "audio_format": "bestaudio/best",
+        "extract_mp3": True,
+        "use_proxy": True,
+        "use_cookies": True,
+    },
     {
         "player_clients": "android",
         "audio_format": "bestaudio/best",
         "extract_mp3": True,
         "use_proxy": True,
         "use_cookies": False,
-    },
-    {
-        "player_clients": "ios",
-        "audio_format": "bestaudio/best",
-        "extract_mp3": True,
-        "use_proxy": True,
-        "use_cookies": False,
-    },
-    {
-        "player_clients": "web_safari",
-        "audio_format": "",
-        "extract_mp3": True,
-        "use_proxy": True,
-        "use_cookies": True,
-    },
-    {
-        "player_clients": "mweb,tv",
-        "audio_format": "",
-        "extract_mp3": True,
-        "use_proxy": True,
-        "use_cookies": True,
-    },
-    {
-        "player_clients": "web_safari,mweb",
-        "audio_format": "",
-        "extract_mp3": True,
-        "use_proxy": False,
-        "use_cookies": True,
     },
 )
 
