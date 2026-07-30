@@ -2692,13 +2692,7 @@ def _ytdlp_auth_args(*, use_cookies: bool = True) -> list[str]:
         logger.warning(
             "node not found — YouTube может не отдать аудио (Requested format…)"
         )
-    # curl_cffi: меньше bot-check на VPS
-    try:
-        import curl_cffi  # type: ignore  # noqa: F401
-
-        args.extend(["--impersonate", "chrome"])
-    except Exception:  # noqa: BLE001
-        pass
+    # НЕ использовать --impersonate вместе с cookies: на VPS/proxy даёт вечный bot-check
     if use_cookies:
         if YTDLP_COOKIES_FILE and Path(YTDLP_COOKIES_FILE).is_file():
             if not _cookies_look_logged_in(YTDLP_COOKIES_FILE):

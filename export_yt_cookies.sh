@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Компактный cookies.txt только для YouTube (чтобы влезло в Bothost env).
+# Cookies для Bothost: youtube.com + accounts.google.com (проверено с US-proxy).
 # Использование:
 #   ./export_yt_cookies.sh
 #   ./export_yt_cookies.sh ~/Downloads/yt_cookies_full.txt
 set -euo pipefail
 cd "$(dirname "$0")"
 
-OUT="$HOME/Downloads/yt_cookies_compact.txt"
+OUT="$HOME/Downloads/yt_cookies_server.txt"
 SRC="${1:-}"
 TMP="$(mktemp)"
 
@@ -37,28 +37,22 @@ from pathlib import Path
 src = Path("$TMP")
 dst = Path("$OUT")
 if not src.is_file() or src.stat().st_size < 50:
-    raise SystemExit(
-        "cookies not written.\n"
-        "Сначала:\n"
-        "  .venv/bin/python -m yt_dlp --cookies-from-browser chrome "
-        "--cookies ~/Downloads/yt_cookies_full.txt --skip-download --no-playlist "
-        "--ignore-no-formats-error "
-        "'https://www.youtube.com/watch?v=jNQXAC9IVRw'\n"
-        "Потом снова: ./export_yt_cookies.sh"
-    )
+    raise SystemExit("нет исходных cookies — сначала сделай yt_cookies_full.txt")
 
-keep_names = {
-    "SID", "HSID", "SSID", "APISID", "SAPISID",
-    "__Secure-1PSID", "__Secure-3PSID",
-    "__Secure-1PSIDTS", "__Secure-3PSIDTS",
-    "__Secure-1PAPISID", "__Secure-3PAPISID",
-    "LOGIN_INFO", "PREF", "CONSENT",
-    "VISITOR_INFO1_LIVE", "YSC", "SIDCC",
-    "__Secure-1PSIDCC", "__Secure-3PSIDCC",
-}
-keep_domains = ("youtube.com", "google.com", "youtu.be")
-lines_out = ["# Netscape HTTP Cookie File", "# compact youtube export", ""]
+def keep(domain: str, name: str) -> bool:
+    d = domain.lstrip(".").lower()
+    if "youtube.com" in d or "youtu.be" in d:
+        return True
+    if d in {"google.com", "accounts.google.com"} or d.endswith(".google.com") and "accounts" in d:
+        return True
+    # корневой .google.com нужен для SID/SAPISID
+    if domain in {".google.com", "google.com"}:
+        return True
+    return False
+
+lines_out = ["# Netscape HTTP Cookie File", "# youtube + google accounts", ""]
 kept = 0
+names = set()
 for line in src.read_text(encoding="utf-8", errors="ignore").splitlines():
     if not line or line.startswith("#"):
         continue
@@ -66,22 +60,26 @@ for line in src.read_text(encoding="utf-8", errors="ignore").splitlines():
     if len(parts) < 7:
         continue
     domain, name = parts[0], parts[5]
-    if not any(d in domain for d in keep_domains):
-        continue
-    if name not in keep_names and not name.startswith("__Secure-"):
+    if not keep(domain, name):
         continue
     lines_out.append(line)
     kept += 1
-if kept < 3:
-    raise SystemExit(f"too few cookies kept ({kept}) — залогинься в YouTube в Chrome")
+    names.add(name)
+
+if kept < 5 or "LOGIN_INFO" not in names:
+    raise SystemExit(
+        f"мало cookies ({kept}, LOGIN_INFO={'yes' if 'LOGIN_INFO' in names else 'no'}). "
+        "Залогинься в YouTube в Chrome и пересоздай full export."
+    )
 dst.write_text("\n".join(lines_out) + "\n", encoding="utf-8")
-print(f"wrote {dst} ({dst.stat().st_size} bytes, {kept} cookies)")
+print(f"wrote {dst} ({dst.stat().st_size} bytes, {kept} cookies, LOGIN_INFO=yes)")
 PY
 
 rm -f "$TMP"
 base64 -i "$OUT" | tr -d '\n' | pbcopy
 B64_LEN=$(base64 -i "$OUT" | tr -d '\n' | wc -c | tr -d ' ')
-echo "OK: base64 в буфере (${B64_LEN} символов). Вставь в YTDLP_COOKIES_B64"
-if [[ "$B64_LEN" -gt 12000 ]]; then
-  echo "WARNING: длинно для Bothost — загрузи файл /app/data/cookies.txt без B64"
+echo "OK: base64 в буфере (${B64_LEN} символов)"
+echo "Bothost: удали старый YTDLP_COOKIES_B64 → вставь новый → Update from Git → рестарт"
+if [[ "$B64_LEN" -gt 18000 ]]; then
+  echo "WARNING: длинновато — лучше файл /app/data/cookies.txt без B64"
 fi
