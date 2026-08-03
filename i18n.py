@@ -264,6 +264,10 @@ _STRINGS: dict[str, dict[str, str]] = {
     },
     "btn_ref_lb": {"ru": "🏆 Лидерборд", "en": "🏆 Leaderboard"},
     "btn_ref_back": {"ru": "⬅️ К рефералке", "en": "⬅️ Back to referral"},
+    "download_queued": {
+        "ru": "⏳ Очередь скачивания: позиция <b>{pos}</b> (ждут: {waiting})…",
+        "en": "⏳ Download queue: position <b>{pos}</b> (waiting: {waiting})…",
+    },
 }
 
 

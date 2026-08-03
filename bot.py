@@ -26,6 +26,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     BufferedInputFile,
     CallbackQuery,
+    FSInputFile,
     InputMediaPhoto,
     Message,
 )
@@ -111,6 +112,7 @@ from keyboards import (
     user_playlists_kb,
     youtube_results_kb,
 )
+from download_queue import download_slot, format_capacity_report
 from referrals import (
     attach_referral,
     close_current_season,
@@ -303,6 +305,26 @@ async def note_user_action(uid: int, *, username: str = "") -> None:
         await touch_user(uid, username=username, is_action=True)
     except Exception as exc:  # noqa: BLE001
         logger.debug("note_user_action: %s", exc)
+
+
+def _queue_wait_cb(status: Message, uid: int):
+    lang = get_lang(uid)
+
+    async def _on_wait(pos: int, waiting: int) -> None:
+        try:
+            await status.edit_text(
+                t("download_queued", lang, pos=pos, waiting=waiting)
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    return _on_wait
+
+
+def _audio_from_path(path: Path, filename: str) -> FSInputFile:
+    if not path or not path.exists() or path.stat().st_size <= 0:
+        raise DownloadError("Файл пустой после скачивания.")
+    return FSInputFile(path, filename=filename)
 
 
 async def _apply_pending_referral(message: Message, uid: int) -> None:
@@ -685,10 +707,18 @@ async def cmd_ref(message: Message) -> None:
     await show_referral_home(message, uid_of(message), edit=False)
 
 
+async def cmd_capacity(message: Message) -> None:
+    """Оценка пиковой нагрузки по RAM (только REF_ADMIN_IDS)."""
+    if not is_ref_admin(uid_of(message)):
+        return
+    await message.answer(format_capacity_report())
+
+
 async def cmd_refadmin(message: Message) -> None:
     uid = uid_of(message)
     if not is_ref_admin(uid):
         return
+    await message.answer(format_capacity_report())
     season, board = await leaderboard(20)
     if not season:
         await message.answer("Нет open-сезона.")
@@ -711,6 +741,7 @@ async def cmd_refadmin(message: Message) -> None:
             )
     lines.append(
         "\nКоманды:\n"
+        "<code>/capacity</code> — очередь и ёмкость RAM\n"
         "<code>/refseason close</code> — закрыть сезон и выбрать победителей\n"
         "<code>/refprize sent USER_ID</code> — NFT отправлен"
     )
@@ -3592,19 +3623,19 @@ async def on_callback(callback: CallbackQuery, bot: Bot, state: FSMContext) -> N
                     pass
 
             # только этот video id — без повторного поиска по Apple/имени
-            result = await download_track(
-                hit.watch_url,
-                progress_cb=_progress,
-                artist="",
-                title="",
-            )
+            async with download_slot(
+                on_wait=_queue_wait_cb(status, uid), label="yt_direct"
+            ):
+                result = await download_track(
+                    hit.watch_url,
+                    progress_cb=_progress,
+                    artist="",
+                    title="",
+                )
             path = result.path
-            payload = result.payload()
-            if not payload:
-                raise DownloadError("Файл пустой после скачивания.")
-            audio = BufferedInputFile(
-                payload,
-                filename=f"{(result.artist or art or 'track')} - "
+            audio = _audio_from_path(
+                path,
+                f"{(result.artist or art or 'track')} - "
                 f"{(result.title or tit or 'audio')}.mp3",
             )
             sent = await msg.answer_audio(
@@ -4064,23 +4095,23 @@ async def on_callback(callback: CallbackQuery, bot: Bot, state: FSMContext) -> N
                 except Exception:  # noqa: BLE001
                     pass
 
-            result = await download_single_track(
-                artist,
-                title,
-                progress_cb=_progress,
-                expected_duration=(
-                    int(track.get("duration") or 0) or None
-                ),
-                album=(sess.get("album") or ""),
-                strict=True,
-            )
+            async with download_slot(
+                on_wait=_queue_wait_cb(status, uid), label="track"
+            ):
+                result = await download_single_track(
+                    artist,
+                    title,
+                    progress_cb=_progress,
+                    expected_duration=(
+                        int(track.get("duration") or 0) or None
+                    ),
+                    album=(sess.get("album") or ""),
+                    strict=True,
+                )
             path = result.path
-            payload = result.payload()
-            if not payload:
-                raise DownloadError("Файл пустой после скачивания.")
-            audio = BufferedInputFile(
-                payload,
-                filename=(
+            audio = _audio_from_path(
+                path,
+                (
                     path.name
                     if path and path.suffix
                     else f"{(result.title or title)}.mp3"
@@ -4179,9 +4210,12 @@ async def on_callback(callback: CallbackQuery, bot: Bot, state: FSMContext) -> N
         zip_paths: list = []
         audios = None
         try:
-            result = await download_album_as_zip(
-                tracks, artist=artist, album=album
-            )
+            async with download_slot(
+                on_wait=_queue_wait_cb(status, uid), label="album_zip"
+            ):
+                result = await download_album_as_zip(
+                    tracks, artist=artist, album=album
+                )
             zip_paths = result.zip_paths
             audios = result.individual_files
             if result.too_large and audios:
@@ -4203,9 +4237,8 @@ async def on_callback(callback: CallbackQuery, bot: Bot, state: FSMContext) -> N
                 )
                 for audio_item in audios:
                     try:
-                        doc = BufferedInputFile(
-                            audio_item.payload(),
-                            filename=audio_item.path.name,
+                        doc = _audio_from_path(
+                            audio_item.path, audio_item.path.name
                         )
                         sent = await msg.answer_audio(
                             audio=doc,
@@ -4232,10 +4265,7 @@ async def on_callback(callback: CallbackQuery, bot: Bot, state: FSMContext) -> N
                         f"(лимит Telegram 50 МБ)…"
                     )
                 for i, zp in enumerate(zip_paths, start=1):
-                    doc = BufferedInputFile(
-                        zp.read_bytes(),
-                        filename=zp.name,
-                    )
+                    doc = FSInputFile(zp, filename=zp.name)
                     caption = (
                         f"📦 {escape_html(album)} "
                         f"({i}/{len(zip_paths)})"
@@ -4381,6 +4411,7 @@ async def main() -> None:
     dp.message.register(cmd_newreleases, Command("newreleases"))
     dp.message.register(cmd_ref, Command("ref"))
     dp.message.register(cmd_refadmin, Command("refadmin"))
+    dp.message.register(cmd_capacity, Command("capacity"))
     dp.message.register(cmd_refseason, Command("refseason"))
     dp.message.register(cmd_refprize, Command("refprize"))
     dp.callback_query.register(on_callback)

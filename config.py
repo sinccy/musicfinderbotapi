@@ -249,6 +249,35 @@ except ValueError:
 _PROBE_RAW = (_get("YTDLP_EJS_PROBE") or ("0" if LOW_MEMORY else "1")).strip().lower()
 YTDLP_EJS_PROBE = _PROBE_RAW in {"1", "true", "yes", "on"}
 
+# Глобальная очередь скачиваний (одновременные yt-dlp на весь бот)
+try:
+    MAX_PARALLEL_DOWNLOADS = max(
+        1,
+        int(_get("MAX_PARALLEL_DOWNLOADS", "1" if LOW_MEMORY else "2") or "1"),
+    )
+except ValueError:
+    MAX_PARALLEL_DOWNLOADS = 1
+try:
+    HOST_RAM_MB = max(256, int(_get("HOST_RAM_MB", "1024") or "1024"))
+except ValueError:
+    HOST_RAM_MB = 1024
+try:
+    IDLE_RAM_ESTIMATE_MB = max(
+        64, int(_get("IDLE_RAM_ESTIMATE_MB", "230") or "230")
+    )
+except ValueError:
+    IDLE_RAM_ESTIMATE_MB = 230
+try:
+    PEAK_PER_DOWNLOAD_MB = max(
+        40, int(_get("PEAK_PER_DOWNLOAD_MB", "100") or "100")
+    )
+except ValueError:
+    PEAK_PER_DOWNLOAD_MB = 100
+try:
+    RAM_SAFETY_MB = max(32, int(_get("RAM_SAFETY_MB", "150") or "150"))
+except ValueError:
+    RAM_SAFETY_MB = 150
+
 
 def require_core_env() -> None:
     missing = []
