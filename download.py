@@ -31,6 +31,7 @@ import aiohttp
 
 from cache import get_session
 from config import (
+    DOWNLOAD_CONCURRENCY,
     DOWNLOAD_TIMEOUT,
     MAX_AUDIO_BYTES,
     YTDLP_COOKIES_FILE,
@@ -143,10 +144,20 @@ def raise_unavailable_free(artist: str, title: str, *, extra: str = "") -> None:
 # кэш доступности свободной загрузки: ключ → (ok, ts)
 _FREE_AVAIL_CACHE: dict[str, tuple[bool, float]] = {}
 _FREE_AVAIL_TTL = 6 * 3600
+_FREE_AVAIL_MAX = 800
 
 
 def _free_avail_key(artist: str, album: str, *, track: str = "") -> str:
     return f"{artist.casefold()}::{album.casefold()}::{track.casefold()}"
+
+
+def _free_avail_put(key: str, ok: bool) -> None:
+    _FREE_AVAIL_CACHE[key] = (ok, time.time())
+    if len(_FREE_AVAIL_CACHE) > _FREE_AVAIL_MAX:
+        # выкинуть самые старые
+        oldest = sorted(_FREE_AVAIL_CACHE.items(), key=lambda kv: kv[1][1])
+        for k, _ in oldest[: len(_FREE_AVAIL_CACHE) - _FREE_AVAIL_MAX + 100]:
+            _FREE_AVAIL_CACHE.pop(k, None)
 
 
 CLOSED_DOWNLOAD_NOTICE = (
@@ -317,7 +328,7 @@ async def probe_album_free_download(
         if ratio >= 0.45 or matched >= 5:
             # Карта альбома на YTM есть — кнопка открыта.
             # Не гоняем yt-dlp на probe (жрёт RAM и даёт ложный format/bot).
-            _FREE_AVAIL_CACHE[cache_key] = (True, time.time())
+            _free_avail_put(cache_key, True)
             logger.info(
                 "free download OK via YTM map %s — %s (%d/%d)",
                 artist,
@@ -361,7 +372,7 @@ async def probe_album_free_download(
             available = checked >= min(3, n) and ok == checked
     else:
         available = checked > 0 and (ok / checked) >= 0.5
-    _FREE_AVAIL_CACHE[cache_key] = (available, time.time())
+    _free_avail_put(cache_key, available)
     logger.info(
         "free download %s %s — %s (sample %d/%d, ytm_keys=%d)",
         "OK" if available else "LOCKED",
@@ -390,7 +401,7 @@ async def probe_single_track_free_download(
     ok = await probe_track_has_free_source(
         artist, title, album=album, expected=expected
     )
-    _FREE_AVAIL_CACHE[key] = (ok, time.time())
+    _free_avail_put(key, ok)
     return ok
 
 
@@ -401,6 +412,15 @@ class DownloadedAudio:
     artist: str
     duration: Optional[int] = None
     data: bytes = field(default_factory=bytes)
+
+    def size_bytes(self) -> int:
+        """Размер без чтения всего файла в RAM."""
+        if self.data:
+            return len(self.data)
+        try:
+            return int(self.path.stat().st_size) if self.path.exists() else 0
+        except OSError:
+            return 0
 
     def payload(self) -> bytes:
         if self.data:
@@ -1480,7 +1500,7 @@ async def download_album_as_zip(
         except Exception as exc:  # noqa: BLE001
             logger.warning("album ZIP YTM prefetch failed: %s", exc)
 
-    sem = asyncio.Semaphore(3)
+    sem = asyncio.Semaphore(max(1, int(DOWNLOAD_CONCURRENCY)))
 
     async def _one(t: dict[str, str]) -> Optional[DownloadedAudio]:
         name = (t.get("name") or t.get("track_name") or "").strip()
@@ -1507,7 +1527,8 @@ async def download_album_as_zip(
     if not downloaded:
         raise DownloadError("Не удалось скачать ни одного трека.")
 
-    total_size = sum(len(a.payload()) for a in downloaded)
+    # stat, не payload() — иначе весь альбом читается в RAM только ради размера
+    total_size = sum(a.size_bytes() for a in downloaded)
     if total_size > MAX_AUDIO_BYTES:
         return AlbumZipResult(
             zip_paths=[],
@@ -2136,6 +2157,16 @@ def _score_ytmusic_song(
 
 
 _YTM_ALBUM_CACHE: dict[str, dict[str, str]] = {}
+_YTM_ALBUM_CACHE_MAX = 120
+
+
+def _ytm_cache_put(key: str, mapping: dict[str, str]) -> None:
+    _YTM_ALBUM_CACHE[key] = mapping
+    if len(_YTM_ALBUM_CACHE) > _YTM_ALBUM_CACHE_MAX:
+        for k in list(_YTM_ALBUM_CACHE.keys())[
+            : len(_YTM_ALBUM_CACHE) - _YTM_ALBUM_CACHE_MAX + 20
+        ]:
+            _YTM_ALBUM_CACHE.pop(k, None)
 _YTM_CLIENT = None
 
 
@@ -2329,13 +2360,14 @@ async def _ytmusic_album_track_map(artist: str, album: str) -> dict[str, str]:
 
     mapping = await asyncio.to_thread(_fetch)
     if mapping:
-        _YTM_ALBUM_CACHE[cache_key] = mapping
+        _ytm_cache_put(cache_key, mapping)
         loc = (YTMUSIC_LOCATION or "US").upper()
         # также кэш без (Deluxe) чтобы следующие запросы попадали
         for alb in _album_name_variants(album)[1:]:
-            _YTM_ALBUM_CACHE[
-                f"{loc}::{artist.casefold()}::{alb.casefold()}"
-            ] = mapping
+            _ytm_cache_put(
+                f"{loc}::{artist.casefold()}::{alb.casefold()}",
+                mapping,
+            )
     return mapping
 
 

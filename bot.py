@@ -233,6 +233,23 @@ _youtube_sessions: dict[str, dict[str, Any]] = {}
 # uid -> последний список поиска (для кнопки «Назад» с карточки альбома)
 _user_list_nav: dict[int, dict[str, Any]] = {}
 
+# лимиты сессий (Bothost ~1GB)
+_ALBUM_SESS_MAX = 80
+_DOWNLOAD_SESS_MAX = 100
+_YT_SESS_MAX = 60
+_LYRICS_SESS_MAX = 60
+_PENDING_Q_MAX = 100
+_USER_NAV_MAX = 2000
+
+
+def _trim_dict(store: dict, max_size: int, drop: int = 0) -> None:
+    """Выкидывает самые старые ключи (порядок вставки CPython 3.7+)."""
+    if len(store) <= max_size:
+        return
+    n = drop or max(20, len(store) - max_size + 10)
+    for k in list(store.keys())[:n]:
+        store.pop(k, None)
+
 COUNTRY_CHOICES = ("ru", "us", "gb", "de", "fr", "jp", "br", "ua", "kz")
 
 WELCOME = t("welcome", DEFAULT_LANG)
@@ -368,6 +385,7 @@ def remember_list_nav(
             "session_key": session_key,
             "page": page,
         }
+        _trim_dict(_user_list_nav, _USER_NAV_MAX)
 
 
 def list_back_callback(uid: int) -> str:
@@ -475,6 +493,7 @@ def store_search_session(
         "all_releases": all_releases or [],
         "back_callback": back_callback or "mode:menu",
     }
+    _trim_dict(_album_sessions, _ALBUM_SESS_MAX)
     return key
 
 
@@ -504,9 +523,7 @@ def store_download_session(
         "free_download": free_download,
         "unavailable_idx": set(),
     }
-    if len(_download_sessions) > 400:
-        for k in list(_download_sessions.keys())[:80]:
-            _download_sessions.pop(k, None)
+    _trim_dict(_download_sessions, _DOWNLOAD_SESS_MAX)
     return key
 
 
@@ -852,9 +869,7 @@ async def show_recommendations(
     def _store_q(q: str) -> str:
         key = uuid.uuid4().hex[:8]
         _pending_queries[key] = q
-        if len(_pending_queries) > 400:
-            for k in list(_pending_queries.keys())[:80]:
-                _pending_queries.pop(k, None)
+        _trim_dict(_pending_queries, _PENDING_Q_MAX)
         return key
 
     # артисты из истории
@@ -1664,9 +1679,7 @@ async def _present_youtube_page(
 ) -> None:
     key = session_key or uuid.uuid4().hex[:10]
     _youtube_sessions[key] = {"hits": hits, "query": query}
-    if len(_youtube_sessions) > 200:
-        for k in list(_youtube_sessions.keys())[:40]:
-            _youtube_sessions.pop(k, None)
+    _trim_dict(_youtube_sessions, _YT_SESS_MAX)
 
     total_pages = pages_count(len(hits), ALBUMS_PER_PAGE)
     page = max(0, min(page, total_pages - 1))
@@ -1963,9 +1976,7 @@ async def _present_lyrics_page(
 ) -> None:
     key = session_key or uuid.uuid4().hex[:10]
     _lyrics_sessions[key] = hits
-    if len(_lyrics_sessions) > 200:
-        for k in list(_lyrics_sessions.keys())[:40]:
-            _lyrics_sessions.pop(k, None)
+    _trim_dict(_lyrics_sessions, _LYRICS_SESS_MAX)
 
     total_pages = pages_count(len(hits), ALBUMS_PER_PAGE)
     page = max(0, min(page, total_pages - 1))
@@ -2765,6 +2776,7 @@ async def _show_genius(target: Message, country: str = "global") -> None:
     try:
         songs, source = await get_genius_charts(country, limit=20)
         _chart_cache_mem[country] = songs
+        _trim_dict(_chart_cache_mem, 12)
         page = 0
         total_pages = pages_count(len(songs), CHART_PER_PAGE)
         chunk = songs[0:CHART_PER_PAGE]
@@ -4330,12 +4342,19 @@ async def main() -> None:
             "YouTube cookies не заданы — скачивание может падать с антиботом"
         )
 
-    try:
-        from bootstrap import probe_ytdlp_js_challenge
+    if config.YTDLP_EJS_PROBE:
+        try:
+            from bootstrap import probe_ytdlp_js_challenge
 
-        probe_ytdlp_js_challenge(node_path if node_path != "none" else "")
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("yt-dlp EJS probe error: %s", exc)
+            probe_ytdlp_js_challenge(node_path if node_path != "none" else "")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("yt-dlp EJS probe error: %s", exc)
+    else:
+        logger.info(
+            "yt-dlp EJS probe skipped (LOW_MEMORY / YTDLP_EJS_PROBE=0) "
+            "concurrency=%s",
+            config.DOWNLOAD_CONCURRENCY,
+        )
 
     session = None
     if TELEGRAM_PROXY:

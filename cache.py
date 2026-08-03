@@ -13,9 +13,9 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-# Результаты поиска: TTL 1 час
-_search_cache: TTLCache = TTLCache(maxsize=512, ttl=3600)
-_charts_cache: TTLCache = TTLCache(maxsize=128, ttl=1800)
+# Результаты поиска (урезано под Bothost ~1GB)
+_search_cache: TTLCache = TTLCache(maxsize=192, ttl=1800)
+_charts_cache: TTLCache = TTLCache(maxsize=64, ttl=1800)
 _lock = asyncio.Lock()
 
 _session: Optional[aiohttp.ClientSession] = None

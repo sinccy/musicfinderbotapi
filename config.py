@@ -236,6 +236,19 @@ DOWNLOAD_ALBUM_TIMEOUT = 180.0
 # Telegram лимит аудио ~50 MB
 MAX_AUDIO_BYTES = 48 * 1024 * 1024
 
+# Память (Bothost ~1GB): по умолчанию low-memory режим
+_LOW_RAW = (_get("LOW_MEMORY") or "1").strip().lower()
+LOW_MEMORY = _LOW_RAW not in {"0", "false", "no", "off"}
+try:
+    DOWNLOAD_CONCURRENCY = max(
+        1, int(_get("DOWNLOAD_CONCURRENCY", "1" if LOW_MEMORY else "2") or "1")
+    )
+except ValueError:
+    DOWNLOAD_CONCURRENCY = 1
+# Тяжёлый yt-dlp EJS probe на старте (жрёт RAM). По умолчанию выкл в LOW_MEMORY.
+_PROBE_RAW = (_get("YTDLP_EJS_PROBE") or ("0" if LOW_MEMORY else "1")).strip().lower()
+YTDLP_EJS_PROBE = _PROBE_RAW in {"1", "true", "yes", "on"}
+
 
 def require_core_env() -> None:
     missing = []
