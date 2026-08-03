@@ -129,10 +129,33 @@ def _resolve_ytdlp_cookies_from_browser(cookies_file: str) -> str:
 
 
 BOT_TOKEN = _get("BOT_TOKEN")
+BOT_USERNAME = (_get("BOT_USERNAME") or "projectcover_bot").lstrip("@")
 OCR_SPACE_API_KEY = _get("OCR_SPACE_API_KEY") or _get("OCR_API_KEY")
 # eng / rus / auto (OCR Engine 2 лучше с auto)
 OCR_LANGUAGE = _get("OCR_LANGUAGE", "auto") or "auto"
 DEFAULT_COUNTRY = (_get("DEFAULT_COUNTRY", "ru") or "ru").lower()
+
+# --- Сезонная рефералка (NFT gift в конце сезона) ---
+REF_SEASON_NAME = _get("REF_SEASON_NAME", "Season 1") or "Season 1"
+REF_SEASON_START = _get("REF_SEASON_START")  # YYYY-MM-DD или ISO
+REF_SEASON_END = _get("REF_SEASON_END")
+try:
+    REF_MIN_ACTIVE_DAYS = max(1, int(_get("REF_MIN_ACTIVE_DAYS", "7") or "7"))
+except ValueError:
+    REF_MIN_ACTIVE_DAYS = 7
+try:
+    REF_MIN_ACTIONS = max(1, int(_get("REF_MIN_ACTIONS", "3") or "3"))
+except ValueError:
+    REF_MIN_ACTIONS = 3
+try:
+    REF_WINNERS_COUNT = max(1, int(_get("REF_WINNERS_COUNT", "10") or "10"))
+except ValueError:
+    REF_WINNERS_COUNT = 10
+REF_ADMIN_IDS: set[int] = set()
+for _part in (_get("REF_ADMIN_IDS") or "").replace(";", ",").split(","):
+    _part = _part.strip()
+    if _part.isdigit():
+        REF_ADMIN_IDS.add(int(_part))
 
 SPOTIFY_CLIENT_ID = _get("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = _get("SPOTIFY_CLIENT_SECRET")

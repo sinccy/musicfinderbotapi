@@ -127,6 +127,15 @@ def _init_sync() -> None:
             "CREATE INDEX IF NOT EXISTS idx_sh_user "
             "ON search_history(user_id, created_at DESC)"
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_prefs (
+                user_id INTEGER PRIMARY KEY,
+                language TEXT NOT NULL DEFAULT 'ru',
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
         conn.commit()
 
 
@@ -741,3 +750,48 @@ async def recommendation_seeds(
         asyncio.to_thread(_recent_titles_sync, user_id, limit=10),
     )
     return artists, titles
+
+
+def _get_user_language_sync(user_id: int) -> Optional[str]:
+    if not user_id:
+        return None
+    _init_sync()
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT language FROM user_prefs WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+    if not row:
+        return None
+    lang = (row["language"] or "").strip().lower()
+    return lang or None
+
+
+def _set_user_language_sync(user_id: int, language: str) -> str:
+    _init_sync()
+    lang = (language or "ru").strip().lower()
+    if lang not in {"ru", "en"}:
+        lang = "ru"
+    now = _now()
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO user_prefs (user_id, language, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                language = excluded.language,
+                updated_at = excluded.updated_at
+            """,
+            (user_id, lang, now),
+        )
+        conn.commit()
+    return lang
+
+
+async def get_user_language(user_id: int) -> Optional[str]:
+    """Сохранённый язык пользователя или None, если ещё не выбирал."""
+    return await asyncio.to_thread(_get_user_language_sync, user_id)
+
+
+async def set_user_language(user_id: int, language: str) -> str:
+    return await asyncio.to_thread(_set_user_language_sync, user_id, language)

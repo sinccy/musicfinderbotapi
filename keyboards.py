@@ -12,6 +12,7 @@ from aiogram.types import (
 )
 
 from config import ALBUMS_PER_PAGE, CHART_PER_PAGE
+from i18n import DEFAULT_LANG, normalize_lang, t
 
 # Тексты кнопок reply-клавиатуры (для фильтров в bot.py)
 BTN_START = "🏠 Главное меню"
@@ -22,23 +23,46 @@ BTN_RECENT = "📂 Недавно скачанные"
 BTN_MY_PLAYLISTS = "🎛 Мои плейлисты"
 BTN_RECOMMEND = "✨ Рекомендации"
 
+BTN_START_EN = "🏠 Main menu"
+BTN_SETTINGS_EN = "⚙️ Settings"
+BTN_HELP_EN = "❓ Help"
+BTN_RECOMMEND_EN = "✨ Recommendations"
 
-def get_main_reply_keyboard() -> ReplyKeyboardMarkup:
+
+def get_main_reply_keyboard(lang: str = DEFAULT_LANG) -> ReplyKeyboardMarkup:
     """Постоянная нижняя клавиатура."""
+    lang_n = normalize_lang(lang)
     return ReplyKeyboardMarkup(
         keyboard=[
             [
-                KeyboardButton(text=BTN_START),
-                KeyboardButton(text=BTN_SETTINGS),
+                KeyboardButton(text=t("btn_start", lang_n)),
+                KeyboardButton(text=t("btn_settings", lang_n)),
             ],
             [
-                KeyboardButton(text=BTN_RECOMMEND),
-                KeyboardButton(text=BTN_HELP),
+                KeyboardButton(text=t("btn_recommend", lang_n)),
+                KeyboardButton(text=t("btn_help", lang_n)),
             ],
         ],
         resize_keyboard=True,
         is_persistent=True,
-        input_field_placeholder="Поиск: артист, альбом или трек…",
+        input_field_placeholder=t("reply_placeholder", lang_n),
+    )
+
+
+def language_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🇷🇺 Русский",
+                    callback_data="lang:ru",
+                ),
+                InlineKeyboardButton(
+                    text="🇬🇧 English",
+                    callback_data="lang:en",
+                ),
+            ],
+        ]
     )
 
 
@@ -138,63 +162,124 @@ def youtube_results_kb(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def settings_kb(*, quality: str, country: str = "") -> InlineKeyboardMarkup:
+def settings_kb(
+    *, quality: str, country: str = "", lang: str = DEFAULT_LANG
+) -> InlineKeyboardMarkup:
     del country  # регион убран из UI
+    lang_n = normalize_lang(lang)
     q_mark_192 = "✓ " if quality == "192" else ""
     q_mark_128 = "✓ " if quality == "128" else ""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text=f"{q_mark_192}Качество 192 kbps",
+                    text=f"{q_mark_192}{t('set_q_192', lang_n)}",
                     callback_data="set:q:192",
                 ),
                 InlineKeyboardButton(
-                    text=f"{q_mark_128}Качество 128 kbps",
+                    text=f"{q_mark_128}{t('set_q_128', lang_n)}",
                     callback_data="set:q:128",
                 ),
             ],
-            [InlineKeyboardButton(text="🏠 Меню", callback_data="mode:menu")],
+            [
+                InlineKeyboardButton(
+                    text=t("set_language", lang_n),
+                    callback_data="lang:pick",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=t("set_referral", lang_n),
+                    callback_data="ref:home",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=t("btn_menu", lang_n),
+                    callback_data="mode:menu",
+                )
+            ],
         ]
     )
 
 
-def main_menu_kb() -> InlineKeyboardMarkup:
+def referral_kb(lang: str = DEFAULT_LANG) -> InlineKeyboardMarkup:
+    lang_n = normalize_lang(lang)
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="🔍 Поиск по названию",
+                    text=t("btn_ref_lb", lang_n),
+                    callback_data="ref:lb",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=t("btn_menu", lang_n),
+                    callback_data="mode:menu",
+                )
+            ],
+        ]
+    )
+
+
+def referral_lb_kb(lang: str = DEFAULT_LANG) -> InlineKeyboardMarkup:
+    lang_n = normalize_lang(lang)
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=t("btn_ref_back", lang_n),
+                    callback_data="ref:home",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=t("btn_menu", lang_n),
+                    callback_data="mode:menu",
+                )
+            ],
+        ]
+    )
+
+
+def main_menu_kb(lang: str = DEFAULT_LANG) -> InlineKeyboardMarkup:
+    lang_n = normalize_lang(lang)
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=t("menu_text_search", lang_n),
                     callback_data="mode:text",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="🔗 Поиск по ссылке",
+                    text=t("menu_link_search", lang_n),
                     callback_data="mode:link",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="🖼 Поиск по обложке (в разработке)",
+                    text=t("menu_cover_search", lang_n),
                     callback_data="mode:cover",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="📊 Топ чарт (Genius)",
+                    text=t("menu_tops", lang_n),
                     callback_data="mode:tops",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="🗓 Недельные релизы",
+                    text=t("menu_releases", lang_n),
                     callback_data="mode:newreleases",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text=BTN_RECOMMEND,
+                    text=t("btn_recommend", lang_n),
                     callback_data="pl:reco",
                 )
             ],

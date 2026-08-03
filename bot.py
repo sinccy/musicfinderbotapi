@@ -47,6 +47,9 @@ from config import (
     OCR_LANGUAGE,
     OCR_SPACE_API_KEY,
     PHOTO_SEARCH_TIMEOUT,
+    REF_MIN_ACTIONS,
+    REF_MIN_ACTIVE_DAYS,
+    REF_WINNERS_COUNT,
     TELEGRAM_PROXY,
     require_core_env,
 )
@@ -66,11 +69,22 @@ from download import (
     search_youtube_tracks,
     show_track_selection,
 )
+from i18n import (
+    DEFAULT_LANG,
+    is_cis_language,
+    lang_display,
+    normalize_lang,
+    t,
+)
 from keyboards import (
     BTN_HELP,
+    BTN_HELP_EN,
     BTN_RECOMMEND,
+    BTN_RECOMMEND_EN,
     BTN_SETTINGS,
+    BTN_SETTINGS_EN,
     BTN_START,
+    BTN_START_EN,
     albums_page_kb,
     artists_kb,
     back_to_menu_kb,
@@ -78,6 +92,7 @@ from keyboards import (
     choose_playlist_kb,
     country_kb,
     get_main_reply_keyboard,
+    language_kb,
     lyrics_page_kb,
     main_menu_kb,
     pages_count,
@@ -87,10 +102,25 @@ from keyboards import (
     query_type_kb,
     recent_playlist_kb,
     recommendations_kb,
+    referral_kb,
+    referral_lb_kb,
     settings_kb,
     user_playlist_tracks_kb,
     user_playlists_kb,
     youtube_results_kb,
+)
+from referrals import (
+    attach_referral,
+    close_current_season,
+    format_season_dates,
+    init_referral_db,
+    is_ref_admin,
+    leaderboard,
+    mark_prize_sent,
+    parse_ref_arg,
+    referral_link,
+    referral_stats,
+    touch_user,
 )
 from links import (
     build_platform_links,
@@ -136,6 +166,7 @@ from playlists import (
     delete_from_playlist,
     delete_user_playlist,
     get_playlist_track,
+    get_user_language,
     get_user_playlist,
     get_user_playlist_track,
     init_playlist_db,
@@ -146,6 +177,7 @@ from playlists import (
     record_search,
     remove_from_user_playlist,
     save_to_playlist,
+    set_user_language,
 )
 from states import SearchMode
 from utils import (
@@ -182,6 +214,9 @@ async def safe_callback_answer(
 # --- In-memory caches (режим — в FSM) ---
 _user_country: dict[int, str] = {}
 _user_quality: dict[int, str] = {}  # "192" | "128"
+_user_lang: dict[int, str] = {}  # "ru" | "en"
+# referee_id -> referrer_id (пока не выбран язык / не привязали)
+_pending_ref: dict[int, int] = {}
 # session_key -> {"albums": [...], "singles": [...]}
 _album_sessions: dict[str, dict[str, list]] = {}
 _chart_cache_mem: dict[str, list[ChartSong]] = {}
@@ -198,19 +233,128 @@ _user_list_nav: dict[int, dict[str, Any]] = {}
 
 COUNTRY_CHOICES = ("ru", "us", "gb", "de", "fr", "jp", "br", "ua", "kz")
 
-WELCOME = (
-    "🎧 <b>PROJECT COVER</b>\n\n"
-    "Просто пришлите в чат:\n"
-    "• <b>название</b> артиста, альбома или трека\n"
-    "• <b>ссылку</b> (Apple, Spotify, YouTube, Genius…)\n\n"
-    "Кнопки меню — по желанию, искать можно сразу без них.\n"
-    "<i>🖼 Поиск по обложке — пока в разработке.</i>"
-)
+WELCOME = t("welcome", DEFAULT_LANG)
 
 
 def uid_of(message: Message | CallbackQuery) -> int:
     user = message.from_user
     return user.id if user else 0
+
+
+def get_lang(uid: int) -> str:
+    return _user_lang.get(uid, DEFAULT_LANG)
+
+
+async def resolve_user_lang(
+    uid: int, tg_language_code: Optional[str] = None
+) -> Optional[str]:
+    """
+    Язык пользователя из кэша/БД.
+    Для CIS (по Telegram language_code) — сразу ru.
+    Иначе None → нужен экран выбора языка.
+    """
+    if not uid:
+        return DEFAULT_LANG
+    cached = _user_lang.get(uid)
+    if cached:
+        return cached
+    saved = await get_user_language(uid)
+    if saved:
+        lang = normalize_lang(saved)
+        _user_lang[uid] = lang
+        return lang
+    if is_cis_language(tg_language_code):
+        lang = await set_user_language(uid, "ru")
+        _user_lang[uid] = lang
+        return lang
+    return None
+
+
+async def apply_user_lang(uid: int, lang: str) -> str:
+    lang_n = await set_user_language(uid, normalize_lang(lang))
+    _user_lang[uid] = lang_n
+    return lang_n
+
+
+async def note_user_action(uid: int, *, username: str = "") -> None:
+    """Поиск/скачивание → активность для квалификации реферала."""
+    if not uid:
+        return
+    try:
+        await touch_user(uid, username=username, is_action=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("note_user_action: %s", exc)
+
+
+async def _apply_pending_referral(message: Message, uid: int) -> None:
+    referrer_id = _pending_ref.pop(uid, None)
+    if not referrer_id:
+        return
+    status, detail = await attach_referral(referrer_id, uid)
+    lang = get_lang(uid)
+    if status == "ok_pending":
+        await message.answer(t("ref_attached", lang))
+    elif status == "already":
+        await message.answer(t("ref_already", lang))
+    elif detail == "self":
+        await message.answer(t("ref_self", lang))
+    elif detail in {"season_closed", "no_season"}:
+        await message.answer(t("ref_season_closed", lang))
+
+
+async def show_referral_home(target: Message, uid: int, *, edit: bool = False) -> None:
+    lang = get_lang(uid)
+    season, stats = await referral_stats(uid)
+    if not season:
+        text = t("ref_no_season", lang)
+        kb = back_to_menu_kb()
+    else:
+        text = t(
+            "ref_title",
+            lang,
+            season=escape_html(season.name),
+            dates=format_season_dates(season),
+            winners=season.winners_count or REF_WINNERS_COUNT,
+            link=referral_link(uid),
+            qualified=stats.get("qualified", 0),
+            pending=stats.get("pending", 0),
+            min_actions=REF_MIN_ACTIONS,
+            min_days=REF_MIN_ACTIVE_DAYS,
+        )
+        kb = referral_kb(lang)
+    if edit:
+        await ui_show(target, text, reply_markup=kb, edit=True)
+    else:
+        await target.answer(text, reply_markup=kb)
+
+
+async def show_referral_leaderboard(
+    target: Message, uid: int, *, edit: bool = False
+) -> None:
+    lang = get_lang(uid)
+    season, board = await leaderboard(10)
+    if not season:
+        text = t("ref_no_season", lang)
+        kb = back_to_menu_kb()
+    elif not board:
+        text = t("ref_leaderboard", lang, rows=t("ref_lb_empty", lang))
+        kb = referral_lb_kb(lang)
+    else:
+        lines = []
+        for i, row in enumerate(board, start=1):
+            mark = " ← you" if row.referrer_id == uid else ""
+            if lang == "ru" and row.referrer_id == uid:
+                mark = " ← вы"
+            lines.append(
+                f"{i}. <code>{row.referrer_id}</code> — "
+                f"<b>{row.qualified}</b> ✓ / {row.pending} …{mark}"
+            )
+        text = t("ref_leaderboard", lang, rows="\n".join(lines))
+        kb = referral_lb_kb(lang)
+    if edit:
+        await ui_show(target, text, reply_markup=kb, edit=True)
+    else:
+        await target.answer(text, reply_markup=kb)
 
 
 def remember_list_nav(
@@ -308,8 +452,7 @@ def get_country(uid: int, override: Optional[str] = None) -> str:
 
 
 def _menu_text(uid: int = 0) -> str:
-    del uid  # регион больше не показываем в меню
-    return WELCOME
+    return t("welcome", get_lang(uid))
 
 
 def store_search_session(
@@ -440,49 +583,70 @@ def _tracks_from_album_details(details: Any) -> list[dict[str, Any]]:
 async def reset_to_main_menu(message: Message, state: FSMContext) -> None:
     """Сброс любого незавершённого сценария → главное меню (reply + inline)."""
     uid = uid_of(message)
+    lang = get_lang(uid)
     await state.clear()
     await set_mode_fsm(state, "text")
     await message.answer(
         _menu_text(uid),
-        reply_markup=get_main_reply_keyboard(),
+        reply_markup=get_main_reply_keyboard(lang),
     )
     await message.answer(
-        "Пришлите название или ссылку — или выберите режим:",
-        reply_markup=main_menu_kb(),
+        t("menu_prompt", lang),
+        reply_markup=main_menu_kb(lang),
     )
 
 
-async def cmd_start(message: Message, state: FSMContext) -> None:
+async def cmd_start(
+    message: Message, state: FSMContext, command: CommandObject
+) -> None:
+    uid = uid_of(message)
+    username = (message.from_user.username if message.from_user else "") or ""
+    ref_id = parse_ref_arg(command.args or "")
+    if ref_id:
+        _pending_ref[uid] = ref_id
+    try:
+        await touch_user(uid, username=username, is_action=False)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("touch_user on start: %s", exc)
+
+    tg_lang = message.from_user.language_code if message.from_user else None
+    lang = await resolve_user_lang(uid, tg_lang)
+    if lang is None:
+        await state.clear()
+        await message.answer(
+            t("choose_language", "en"),
+            reply_markup=language_kb(),
+        )
+        return
+    await _apply_pending_referral(message, uid)
     await reset_to_main_menu(message, state)
 
 
 async def cmd_help(message: Message) -> None:
+    uid = uid_of(message)
+    lang = get_lang(uid)
     await message.answer(
-        "📖 <b>Справка</b>\n\n"
-        "/start — главное меню\n"
-        "/top — топ чарт Genius\n"
-        "/newreleases — недельные релизы\n\n"
-        "Режимы: название, ссылка, топ, релизы.\n"
-        "🖼 Поиск по обложке — пока в разработке.\n"
-        "После альбома — ссылки на платформы и ⬇ MP3 "
-        "(выбор трека или ZIP).\n"
-        "✨ Рекомендации — подборки по недавно скачанным трекам.\n\n"
-        "Нижние кнопки: меню, настройки, рекомендации, справка.",
-        reply_markup=main_menu_kb(),
+        t("help", lang),
+        reply_markup=main_menu_kb(lang),
     )
 
 
 async def cmd_settings(message: Message) -> None:
     uid = uid_of(message)
+    lang = get_lang(uid)
     quality = _user_quality.get(uid, "192")
     await message.answer(
-        "⚙️ <b>Настройки</b>\n"
-        f"Качество MP3: <code>{quality} kbps</code>",
-        reply_markup=get_main_reply_keyboard(),
+        t(
+            "settings_title",
+            lang,
+            quality=quality,
+            lang=lang_display(lang),
+        ),
+        reply_markup=get_main_reply_keyboard(lang),
     )
     await message.answer(
-        "Выберите параметр:",
-        reply_markup=settings_kb(quality=quality),
+        t("settings_choose", lang),
+        reply_markup=settings_kb(quality=quality, lang=lang),
     )
 
 
@@ -495,6 +659,103 @@ async def cmd_playlists(message: Message) -> None:
     )
     await show_recommendations(
         message, uid, country=get_country(uid)
+    )
+
+
+async def cmd_ref(message: Message) -> None:
+    await show_referral_home(message, uid_of(message), edit=False)
+
+
+async def cmd_refadmin(message: Message) -> None:
+    uid = uid_of(message)
+    if not is_ref_admin(uid):
+        return
+    season, board = await leaderboard(20)
+    if not season:
+        await message.answer("Нет open-сезона.")
+        return
+    lines = [
+        f"🎁 <b>{escape_html(season.name)}</b> [{season.status}]",
+        f"📅 {format_season_dates(season)}",
+        f"Приз: топ-{season.winners_count}, NFT gift",
+        f"Правила: ≥{REF_MIN_ACTIONS} действий / ≥{REF_MIN_ACTIVE_DAYS} дн.",
+        "",
+        "Лидерборд:",
+    ]
+    if not board:
+        lines.append("пусто")
+    else:
+        for i, row in enumerate(board, start=1):
+            lines.append(
+                f"{i}. <code>{row.referrer_id}</code> — "
+                f"{row.qualified} ✓ / {row.pending} …"
+            )
+    lines.append(
+        "\nКоманды:\n"
+        "<code>/refseason close</code> — закрыть сезон и выбрать победителей\n"
+        "<code>/refprize sent USER_ID</code> — NFT отправлен"
+    )
+    await message.answer("\n".join(lines))
+
+
+async def cmd_refseason(
+    message: Message, command: CommandObject, bot: Bot
+) -> None:
+    uid = uid_of(message)
+    if not is_ref_admin(uid):
+        return
+    args = (command.args or "").strip().lower()
+    if args != "close":
+        await message.answer("Использование: <code>/refseason close</code>")
+        return
+    season, prizes = await close_current_season()
+    if not season:
+        await message.answer("Нет open-сезона для закрытия.")
+        return
+    if not prizes:
+        await message.answer(
+            f"Сезон <b>{escape_html(season.name)}</b> закрыт. "
+            "Победителей с qualified-рефералами нет."
+        )
+        return
+    lines = [f"🏆 Сезон <b>{escape_html(season.name)}</b> закрыт. Победители:"]
+    for p in prizes:
+        lines.append(
+            f"{p.rank}. <code>{p.user_id}</code> — {p.qualified_refs} ✓"
+        )
+        try:
+            await bot.send_message(
+                p.user_id,
+                t(
+                    "ref_winner_dm",
+                    get_lang(p.user_id),
+                    rank=p.rank,
+                    season=escape_html(season.name),
+                    qualified=p.qualified_refs,
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("winner notify %s: %s", p.user_id, exc)
+            lines.append(f"  ⚠️ DM не доставлен: {p.user_id}")
+    await message.answer("\n".join(lines))
+
+
+async def cmd_refprize(message: Message, command: CommandObject) -> None:
+    uid = uid_of(message)
+    if not is_ref_admin(uid):
+        return
+    parts = (command.args or "").strip().split()
+    if len(parts) != 2 or parts[0].lower() != "sent" or not parts[1].isdigit():
+        await message.answer(
+            "Использование: <code>/refprize sent USER_ID</code>"
+        )
+        return
+    target = int(parts[1])
+    ok = await mark_prize_sent(target)
+    await message.answer(
+        f"✅ NFT для <code>{target}</code> помечен как sent."
+        if ok
+        else f"Не найден приз для <code>{target}</code>."
     )
 
 
@@ -1100,6 +1361,7 @@ async def _send_album_details(
             title=details.collection_name,
             kind="album",
         )
+        await note_user_action(uid)
 
     def _photo_caption(full: str) -> str:
         """Caption к фото ≤ 1024 символов."""
@@ -1248,9 +1510,11 @@ async def _send_track_result(
         back_callback=back_cb,
     )
 
+    track_uid = uid_of(message)
     await record_search(
-        uid_of(message), artist=artist, title=title, kind="track"
+        track_uid, artist=artist, title=title, kind="track"
     )
+    await note_user_action(track_uid)
 
     if cover and not edit and len(text) <= 1024:
         try:
@@ -2592,12 +2856,15 @@ async def _show_new_releases(target: Message, country: str) -> None:
 def _is_reply_nav(text: str) -> bool:
     return text in {
         BTN_START,
+        BTN_START_EN,
         "🏠 Start",
         "Start",
         BTN_SETTINGS,
+        BTN_SETTINGS_EN,
         "⚙️ Settings",
         "Settings",
         BTN_RECOMMEND,
+        BTN_RECOMMEND_EN,
         "Рекомендации",
         "✨ Рекомендации",
         "📂 Плейлисты",
@@ -2608,6 +2875,7 @@ def _is_reply_nav(text: str) -> bool:
         "📂 Недавно скачанные",
         "Недавно скачанные",
         BTN_HELP,
+        BTN_HELP_EN,
         "❓ Help",
         "Help",
     }
@@ -2616,19 +2884,32 @@ def _is_reply_nav(text: str) -> bool:
 async def on_message(message: Message, bot: Bot, state: FSMContext) -> None:
     current = await state.get_state()
     text = (message.text or "").strip() if message.text else ""
+    uid = uid_of(message)
+    # язык: из БД / авто-ru для СНГ / иначе — обязательный выбор
+    if uid and uid not in _user_lang:
+        tg_lang = message.from_user.language_code if message.from_user else None
+        resolved = await resolve_user_lang(uid, tg_lang)
+        if resolved is None:
+            await message.answer(
+                t("choose_language", "en"),
+                reply_markup=language_kb(),
+            )
+            return
+    lang = get_lang(uid)
 
     # Нижнее меню всегда важнее текущего сценария (обложка / фильтр / поиск)
     if text and _is_reply_nav(text):
-        if text in {BTN_START, "🏠 Start", "Start"}:
+        if text in {BTN_START, BTN_START_EN, "🏠 Start", "Start"}:
             await reset_to_main_menu(message, state)
             return
         await state.clear()
         await set_mode_fsm(state, "menu")
-        if text in {BTN_SETTINGS, "⚙️ Settings", "Settings"}:
+        if text in {BTN_SETTINGS, BTN_SETTINGS_EN, "⚙️ Settings", "Settings"}:
             await cmd_settings(message)
             return
         if text in {
             BTN_RECOMMEND,
+            BTN_RECOMMEND_EN,
             "Рекомендации",
             "✨ Рекомендации",
             "📂 Плейлисты",
@@ -2641,16 +2922,16 @@ async def on_message(message: Message, bot: Bot, state: FSMContext) -> None:
         }:
             # старые кнопки плейлистов/недавних → рекомендации
             await message.answer(
-                "✨ Рекомендации",
-                reply_markup=get_main_reply_keyboard(),
+                t("recommend_title", lang),
+                reply_markup=get_main_reply_keyboard(lang),
             )
             await show_recommendations(
                 message,
-                uid_of(message),
-                country=get_country(uid_of(message)),
+                uid,
+                country=get_country(uid),
             )
             return
-        if text in {BTN_HELP, "❓ Help", "Help"}:
+        if text in {BTN_HELP, BTN_HELP_EN, "❓ Help", "Help"}:
             await cmd_help(message)
             return
 
@@ -2756,6 +3037,68 @@ async def on_callback(callback: CallbackQuery, bot: Bot, state: FSMContext) -> N
         await callback.answer()
         return
 
+    # выбор / смена языка
+    if data == "lang:pick" or data.startswith("lang:"):
+        if data == "lang:pick":
+            await callback.answer()
+            if msg:
+                await ui_show(
+                    msg,
+                    t("choose_language", get_lang(uid)),
+                    reply_markup=language_kb(),
+                    edit=True,
+                )
+            return
+        code = data.split(":", 1)[1].strip().lower()
+        if code not in {"ru", "en"}:
+            await callback.answer()
+            return
+        lang = await apply_user_lang(uid, code)
+        await callback.answer(t("lang_saved", lang))
+        await state.clear()
+        await set_mode_fsm(state, "text")
+        if msg:
+            try:
+                await msg.edit_text(t("lang_saved", lang))
+            except Exception:  # noqa: BLE001
+                pass
+            await _apply_pending_referral(msg, uid)
+            await msg.answer(
+                _menu_text(uid),
+                reply_markup=get_main_reply_keyboard(lang),
+            )
+            await msg.answer(
+                t("menu_prompt", lang),
+                reply_markup=main_menu_kb(lang),
+            )
+        return
+
+    # рефералка
+    if data in {"ref:home", "ref:lb"}:
+        await callback.answer()
+        if not msg:
+            return
+        if data == "ref:lb":
+            await show_referral_leaderboard(msg, uid, edit=True)
+        else:
+            await show_referral_home(msg, uid, edit=True)
+        return
+
+    if uid and uid not in _user_lang:
+        tg_lang = callback.from_user.language_code if callback.from_user else None
+        resolved = await resolve_user_lang(uid, tg_lang)
+        if resolved is None:
+            await callback.answer()
+            if msg:
+                await ui_show(
+                    msg,
+                    t("choose_language", "en"),
+                    reply_markup=language_kb(),
+                    edit=True,
+                )
+            return
+    lang = get_lang(uid)
+
     # modes (FSM) — меняем то же сообщение, не плодим новые
     if data.startswith("mode:"):
         mode = data.split(":", 1)[1]
@@ -2778,12 +3121,12 @@ async def on_callback(callback: CallbackQuery, bot: Bot, state: FSMContext) -> N
             await set_mode_fsm(state, "text")
             await msg.answer(
                 _menu_text(uid),
-                reply_markup=get_main_reply_keyboard(),
+                reply_markup=get_main_reply_keyboard(lang),
             )
             await ui_show(
                 msg,
-                "Пришлите название или ссылку — или выберите режим:",
-                reply_markup=main_menu_kb(),
+                t("menu_prompt", lang),
+                reply_markup=main_menu_kb(lang),
                 edit=True,
             )
             return
@@ -2791,36 +3134,21 @@ async def on_callback(callback: CallbackQuery, bot: Bot, state: FSMContext) -> N
         if mode == "text":
             await ui_show(
                 msg,
-                "🔍 <b>Поиск по названию</b>\n"
-                "Введите артиста, альбом или трек "
-                "<i>(можно сразу, без этой кнопки)</i>:",
+                t("mode_text", lang),
                 reply_markup=back_to_menu_kb(),
                 edit=True,
             )
         elif mode == "cover":
             await ui_show(
                 msg,
-                "🖼 <b>Поиск по обложке</b>\n\n"
-                "⏳ Пока в разработке.\n"
-                "Сейчас ищите по <b>названию</b> или <b>ссылке</b>.",
+                t("mode_cover", lang),
                 reply_markup=back_to_menu_kb(),
                 edit=True,
             )
         elif mode == "link":
             await ui_show(
                 msg,
-                "🔗 <b>Поиск по ссылке</b>\n\n"
-                "Пришлите ссылку на трек, альбом или артиста:\n"
-                "• Apple Music / iTunes\n"
-                "• Spotify\n"
-                "• YouTube\n"
-                "• Genius\n"
-                "• Яндекс.Музыка\n\n"
-                "<i>Ссылку можно кидать сразу в чат — кнопка не обязательна.</i>\n\n"
-                "<i>Пример:</i>\n"
-                "<code>https://genius.com/albums/…</code>\n"
-                "<code>https://open.spotify.com/track/…</code>\n"
-                "<code>https://youtu.be/…</code>",
+                t("mode_link", lang),
                 reply_markup=back_to_menu_kb(),
                 edit=True,
             )
@@ -3267,6 +3595,7 @@ async def on_callback(callback: CallbackQuery, bot: Bot, state: FSMContext) -> N
                     result.artist or art or hit.uploader,
                     sent.audio.file_id,
                 )
+                await note_user_action(uid)
             await status.edit_text("✅ Готово! Трек добавлен в «Недавно скачанные».")
         except DownloadError as exc:
             await status.edit_text(format_error(str(exc)))
@@ -3287,9 +3616,13 @@ async def on_callback(callback: CallbackQuery, bot: Bot, state: FSMContext) -> N
             if msg:
                 await ui_show(
                     msg,
-                    "⚙️ <b>Настройки</b>\n"
-                    f"Качество MP3: <code>{quality} kbps</code>",
-                    reply_markup=settings_kb(quality=quality),
+                    t(
+                        "settings_title",
+                        lang,
+                        quality=quality,
+                        lang=lang_display(lang),
+                    ),
+                    reply_markup=settings_kb(quality=quality, lang=lang),
                     edit=True,
                 )
         else:
@@ -3741,6 +4074,7 @@ async def on_callback(callback: CallbackQuery, bot: Bot, state: FSMContext) -> N
                     result.artist or artist,
                     sent.audio.file_id,
                 )
+                await note_user_action(uid)
             await status.edit_text("✅ Готово! Трек добавлен в «Недавно скачанные».")
         except DownloadError as exc:
             body, kb_err = _format_download_error(exc)
@@ -3861,6 +4195,7 @@ async def on_callback(callback: CallbackQuery, bot: Bot, state: FSMContext) -> N
                                 audio_item.artist or artist,
                                 sent.audio.file_id,
                             )
+                            await note_user_action(uid)
                     except Exception as exc:  # noqa: BLE001
                         logger.warning("send individual: %s", exc)
                 await status.edit_text("✅ Треки отправлены по одному.")
@@ -3901,9 +4236,13 @@ async def on_callback(callback: CallbackQuery, bot: Bot, state: FSMContext) -> N
             quality = _user_quality.get(uid, "192")
             await ui_show(
                 msg,
-                "⚙️ <b>Настройки</b>\n"
-                f"Качество MP3: <code>{quality} kbps</code>",
-                reply_markup=settings_kb(quality=quality),
+                t(
+                    "settings_title",
+                    lang,
+                    quality=quality,
+                    lang=lang_display(lang),
+                ),
+                reply_markup=settings_kb(quality=quality, lang=lang),
                 edit=True,
             )
         return
@@ -3931,6 +4270,7 @@ async def main() -> None:
     require_core_env()
     validate_token(config.BOT_TOKEN)
     init_playlist_db()
+    init_referral_db()
     import shutil
 
     from config import YTMUSIC_PROXY, refresh_ytdlp_cookies, ytdlp_cookies_status
@@ -4006,6 +4346,10 @@ async def main() -> None:
     dp.message.register(cmd_country, Command("country"))
     dp.message.register(cmd_top, Command("top"))
     dp.message.register(cmd_newreleases, Command("newreleases"))
+    dp.message.register(cmd_ref, Command("ref"))
+    dp.message.register(cmd_refadmin, Command("refadmin"))
+    dp.message.register(cmd_refseason, Command("refseason"))
+    dp.message.register(cmd_refprize, Command("refprize"))
     dp.callback_query.register(on_callback)
     dp.message.register(on_message)
 
