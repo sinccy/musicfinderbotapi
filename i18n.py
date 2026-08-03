@@ -189,6 +189,7 @@ _STRINGS: dict[str, dict[str, str]] = {
     "lang_label_ru": {"ru": "Русский", "en": "Russian"},
     "lang_label_en": {"ru": "English", "en": "English"},
     "set_referral": {"ru": "🎁 Рефералка / сезон", "en": "🎁 Referral season"},
+    "btn_referral": {"ru": "🎁 Рефералка", "en": "🎁 Referral"},
     "ref_title": {
         "ru": (
             "🎁 <b>{season}</b>\n"

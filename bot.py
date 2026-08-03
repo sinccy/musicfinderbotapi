@@ -81,6 +81,8 @@ from keyboards import (
     BTN_HELP_EN,
     BTN_RECOMMEND,
     BTN_RECOMMEND_EN,
+    BTN_REFERRAL,
+    BTN_REFERRAL_EN,
     BTN_SETTINGS,
     BTN_SETTINGS_EN,
     BTN_START,
@@ -2867,6 +2869,10 @@ def _is_reply_nav(text: str) -> bool:
         BTN_RECOMMEND_EN,
         "Рекомендации",
         "✨ Рекомендации",
+        BTN_REFERRAL,
+        BTN_REFERRAL_EN,
+        "Рефералка",
+        "Referral",
         "📂 Плейлисты",
         "📂 Playlists",
         "Playlists",
@@ -2906,6 +2912,14 @@ async def on_message(message: Message, bot: Bot, state: FSMContext) -> None:
         await set_mode_fsm(state, "menu")
         if text in {BTN_SETTINGS, BTN_SETTINGS_EN, "⚙️ Settings", "Settings"}:
             await cmd_settings(message)
+            return
+        if text in {
+            BTN_REFERRAL,
+            BTN_REFERRAL_EN,
+            "Рефералка",
+            "Referral",
+        }:
+            await show_referral_home(message, uid, edit=False)
             return
         if text in {
             BTN_RECOMMEND,

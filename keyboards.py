@@ -27,6 +27,8 @@ BTN_START_EN = "🏠 Main menu"
 BTN_SETTINGS_EN = "⚙️ Settings"
 BTN_HELP_EN = "❓ Help"
 BTN_RECOMMEND_EN = "✨ Recommendations"
+BTN_REFERRAL = "🎁 Рефералка"
+BTN_REFERRAL_EN = "🎁 Referral"
 
 
 def get_main_reply_keyboard(lang: str = DEFAULT_LANG) -> ReplyKeyboardMarkup:
@@ -40,6 +42,9 @@ def get_main_reply_keyboard(lang: str = DEFAULT_LANG) -> ReplyKeyboardMarkup:
             ],
             [
                 KeyboardButton(text=t("btn_recommend", lang_n)),
+                KeyboardButton(text=t("btn_referral", lang_n)),
+            ],
+            [
                 KeyboardButton(text=t("btn_help", lang_n)),
             ],
         ],
@@ -281,6 +286,12 @@ def main_menu_kb(lang: str = DEFAULT_LANG) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text=t("btn_recommend", lang_n),
                     callback_data="pl:reco",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=t("btn_referral", lang_n),
+                    callback_data="ref:home",
                 )
             ],
         ]
