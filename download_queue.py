@@ -160,6 +160,12 @@ async def download_slot(
                 _active = max(0, _active - 1)
                 _total_done += 1
             sem.release()
+            try:
+                from memory_trim import trim_memory
+
+                trim_memory(f"after:{label}")
+            except Exception:  # noqa: BLE001
+                pass
             logger.debug("download slot - label=%s", label)
     finally:
         if not acquired:

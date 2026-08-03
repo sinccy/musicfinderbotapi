@@ -4321,8 +4321,11 @@ async def _check_telegram(bot: Bot) -> None:
 
 async def main() -> None:
     from bootstrap import ensure_system_deps
+    from memory_trim import trim_memory
 
+    # bothost_start уже мог вызвать ensure_system_deps — второй раз no-op
     ensure_system_deps()
+    trim_memory("startup")
     require_core_env()
     validate_token(config.BOT_TOKEN)
     init_playlist_db()
@@ -4418,6 +4421,7 @@ async def main() -> None:
     dp.message.register(on_message)
 
     logger.info("Bot started. default_country=%s FSM=MemoryStorage", DEFAULT_COUNTRY)
+    trim_memory("ready")
 
     # если другой инстанс/хостинг ставит webhook — сбрасываем и продолжаем polling
     async def _keep_polling_exclusive() -> None:
@@ -4442,12 +4446,24 @@ async def main() -> None:
             except Exception as exc:  # noqa: BLE001
                 logger.debug("webhook watchdog: %s", exc)
 
+    async def _periodic_memory_trim() -> None:
+        # Bothost часто показывает high-water после bootstrap; подталкиваем сброс
+        while True:
+            await asyncio.sleep(600)
+            try:
+                await asyncio.to_thread(trim_memory, "periodic")
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("periodic trim: %s", exc)
+
     watchdog = asyncio.create_task(_keep_polling_exclusive())
+    trim_task = asyncio.create_task(_periodic_memory_trim())
     try:
         await dp.start_polling(bot, handle_signals=True)
     finally:
         watchdog.cancel()
+        trim_task.cancel()
         await close_session()
+        trim_memory("shutdown")
 
 
 if __name__ == "__main__":

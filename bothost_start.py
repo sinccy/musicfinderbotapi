@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 
 from bootstrap import ensure_system_deps
+from memory_trim import trim_memory
 
 
 def main() -> None:
@@ -20,8 +21,10 @@ def main() -> None:
     )
     os.chdir(Path(__file__).resolve().parent)
     ensure_system_deps()
+    trim_memory("bootstrap")
     from bot import main as bot_main
 
+    trim_memory("imports")
     asyncio.run(bot_main())
 
 
