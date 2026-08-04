@@ -747,13 +747,14 @@ async def cmd_remind(message: Message, command: CommandObject, bot: Bot) -> None
     if args == "now":
         if not is_ref_admin(uid):
             return
-        stats = await send_retention_batch(bot)
+        stats = await send_retention_batch(bot, force=True)
         await message.answer(
-            "Волна напоминаний:\n"
+            "Волна напоминаний (force, без фильтра 8ч):\n"
             f"sent=<b>{stats.get('sent', 0)}</b> "
             f"blocked=<b>{stats.get('blocked', 0)}</b> "
-            f"fail=<b>{stats.get('fail', 0)}</b> "
-            f"candidates=<b>{stats.get('candidates', 0)}</b>"
+            f"fail=<b>{stats.get('fail', 0)}</b>\n"
+            f"candidates=<b>{stats.get('candidates', 0)}</b> "
+            f"users_total=<b>{stats.get('users_total', 0)}</b>"
         )
         return
     await message.answer(

@@ -90,7 +90,11 @@ def init_retention_db() -> None:
     logger.info("Retention columns ready")
 
 
-def _candidates_sync(limit: int) -> list[int]:
+def _candidates_sync(limit: int, *, force: bool = False) -> list[int]:
+    """
+    force=True (/remind now): игнор «молчит 8ч» и «уже слали 10ч»,
+    только reminders_enabled + не старше MAX_IDLE_DAYS.
+    """
     init_retention_db()
     now = _now()
     min_idle = now - timedelta(hours=max(1, int(RETENTION_INACTIVE_HOURS)))
@@ -105,7 +109,7 @@ def _candidates_sync(limit: int) -> list[int]:
             ORDER BY last_active_at DESC
             LIMIT ?
             """,
-            (max(limit * 5, 200),),
+            (max(limit * 8, 400),),
         ).fetchall()
     out: list[int] = []
     for r in rows:
@@ -114,18 +118,25 @@ def _candidates_sync(limit: int) -> list[int]:
         last_rem = _parse_iso(r["last_reminder_at"] or "")
         if not last_active:
             continue
-        # слишком свежий — не трогаем
-        if last_active > min_idle:
-            continue
-        # совсем пропал — не спамим
+        # совсем пропал — не спамим даже в force
         if last_active < max_idle:
             continue
-        if last_rem and last_rem > min_gap:
-            continue
+        if not force:
+            if last_active > min_idle:
+                continue
+            if last_rem and last_rem > min_gap:
+                continue
         out.append(uid)
         if len(out) >= limit:
             break
     return out
+
+
+def _users_count_sync() -> int:
+    init_retention_db()
+    with _connect() as conn:
+        row = conn.execute("SELECT COUNT(*) AS c FROM bot_users").fetchone()
+    return int(row["c"] or 0) if row else 0
 
 
 def _mark_reminded_sync(user_id: int) -> None:
@@ -236,15 +247,31 @@ async def build_reminder_text(user_id: int) -> tuple[str, str]:
 
 
 async def send_retention_batch(
-    bot: Bot, *, force_user_ids: Optional[list[int]] = None
+    bot: Bot,
+    *,
+    force_user_ids: Optional[list[int]] = None,
+    force: bool = False,
 ) -> dict[str, int]:
-    """Одна волна напоминаний. Возвращает счётчики."""
-    if not RETENTION_REMINDERS and not force_user_ids:
-        return {"sent": 0, "skip": 0, "fail": 0, "blocked": 0}
+    """Одна волна напоминаний. force=True — админский /remind now без idle-фильтров."""
+    users_total = await asyncio.to_thread(_users_count_sync)
+    if not RETENTION_REMINDERS and not force_user_ids and not force:
+        return {
+            "sent": 0,
+            "skip": 0,
+            "fail": 0,
+            "blocked": 0,
+            "candidates": 0,
+            "users_total": users_total,
+        }
 
-    ids = force_user_ids or await asyncio.to_thread(
-        _candidates_sync, max(1, int(RETENTION_MAX_PER_RUN))
-    )
+    if force_user_ids is not None:
+        ids = force_user_ids
+    else:
+        ids = await asyncio.to_thread(
+            _candidates_sync,
+            max(1, int(RETENTION_MAX_PER_RUN)),
+            force=force,
+        )
     sent = skip = fail = blocked = 0
     pause = max(0, int(RETENTION_BATCH_PAUSE_MS)) / 1000.0
 
@@ -272,11 +299,13 @@ async def send_retention_batch(
             await asyncio.sleep(pause)
 
     logger.info(
-        "retention batch sent=%s blocked=%s fail=%s candidates=%s",
+        "retention batch sent=%s blocked=%s fail=%s candidates=%s users_total=%s force=%s",
         sent,
         blocked,
         fail,
         len(ids),
+        users_total,
+        force,
     )
     return {
         "sent": sent,
@@ -284,6 +313,7 @@ async def send_retention_batch(
         "fail": fail,
         "blocked": blocked,
         "candidates": len(ids),
+        "users_total": users_total,
     }
 
 
