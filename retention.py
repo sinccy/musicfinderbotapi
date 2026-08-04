@@ -29,6 +29,7 @@ from config import (
     RETENTION_MAX_PER_RUN,
     RETENTION_REMINDERS,
 )
+from db import resolve_playlist_db
 from i18n import DEFAULT_LANG, normalize_lang, t
 from playlists import get_user_language
 from referrals import (
@@ -40,7 +41,7 @@ from referrals import (
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = Path(__file__).resolve().parent / "playlist.db"
+DB_PATH = resolve_playlist_db()
 
 
 def _connect() -> sqlite3.Connection:
@@ -72,6 +73,20 @@ def _parse_iso(value: str) -> Optional[datetime]:
 
 def init_retention_db() -> None:
     with _connect() as conn:
+        # bot_users могла ещё не создаться, если referrals.init не вызвали
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bot_users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT NOT NULL DEFAULT '',
+                first_seen_at TEXT NOT NULL,
+                last_active_at TEXT NOT NULL,
+                action_count INTEGER NOT NULL DEFAULT 0,
+                first_action_at TEXT NOT NULL DEFAULT '',
+                last_action_at TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
         cols = {
             r[1]
             for r in conn.execute("PRAGMA table_info(bot_users)").fetchall()
@@ -87,7 +102,54 @@ def init_retention_db() -> None:
                 "ADD COLUMN reminders_enabled INTEGER NOT NULL DEFAULT 1"
             )
         conn.commit()
-    logger.info("Retention columns ready")
+    n = _backfill_bot_users_sync()
+    logger.info("Retention ready db=%s backfilled=%s", DB_PATH, n)
+
+
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (name,),
+    ).fetchone()
+    return bool(row)
+
+
+def _backfill_bot_users_sync() -> int:
+    """Подтянуть user_id из истории скачиваний/поиска/prefs/рефералок."""
+    now = _now_iso()
+    added = 0
+    with _connect() as conn:
+        sources: list[str] = []
+        if _table_exists(conn, "recent_downloads"):
+            sources.append("SELECT DISTINCT user_id FROM recent_downloads")
+        if _table_exists(conn, "search_history"):
+            sources.append("SELECT DISTINCT user_id FROM search_history")
+        if _table_exists(conn, "user_prefs"):
+            sources.append("SELECT DISTINCT user_id FROM user_prefs")
+        if _table_exists(conn, "referrals"):
+            sources.append("SELECT DISTINCT referrer_id AS user_id FROM referrals")
+            sources.append("SELECT DISTINCT referee_id AS user_id FROM referrals")
+        if not sources:
+            return 0
+        union = " UNION ".join(f"({s})" for s in sources)
+        rows = conn.execute(union).fetchall()
+        for r in rows:
+            uid = int(r[0] or 0)
+            if not uid:
+                continue
+            cur = conn.execute(
+                """
+                INSERT OR IGNORE INTO bot_users
+                    (user_id, username, first_seen_at, last_active_at,
+                     action_count, first_action_at, last_action_at,
+                     last_reminder_at, reminders_enabled)
+                VALUES (?, '', ?, ?, 0, '', '', '', 1)
+                """,
+                (uid, now, now),
+            )
+            added += int(cur.rowcount or 0)
+        conn.commit()
+    return added
 
 
 def _candidates_sync(limit: int, *, force: bool = False) -> list[int]:

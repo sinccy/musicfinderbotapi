@@ -25,10 +25,11 @@ from config import (
     REF_SEASON_START,
     REF_WINNERS_COUNT,
 )
+from db import resolve_playlist_db
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = Path(__file__).resolve().parent / "playlist.db"
+DB_PATH = resolve_playlist_db()
 
 
 @dataclass(frozen=True)

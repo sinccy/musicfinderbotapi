@@ -16,9 +16,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from db import resolve_playlist_db
+
 logger = logging.getLogger(__name__)
 
-DB_PATH = Path(__file__).resolve().parent / "playlist.db"
+DB_PATH = resolve_playlist_db()
 MAX_TRACKS_PER_USER = 80
 MAX_PLAYLISTS_PER_USER = 20
 MAX_TRACKS_PER_PLAYLIST = 100

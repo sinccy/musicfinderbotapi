@@ -748,13 +748,16 @@ async def cmd_remind(message: Message, command: CommandObject, bot: Bot) -> None
         if not is_ref_admin(uid):
             return
         stats = await send_retention_batch(bot, force=True)
+        from retention import DB_PATH as _ret_db
+
         await message.answer(
             "Волна напоминаний (force, без фильтра 8ч):\n"
             f"sent=<b>{stats.get('sent', 0)}</b> "
             f"blocked=<b>{stats.get('blocked', 0)}</b> "
             f"fail=<b>{stats.get('fail', 0)}</b>\n"
             f"candidates=<b>{stats.get('candidates', 0)}</b> "
-            f"users_total=<b>{stats.get('users_total', 0)}</b>"
+            f"users_total=<b>{stats.get('users_total', 0)}</b>\n"
+            f"db=<code>{escape_html(str(_ret_db))}</code>"
         )
         return
     await message.answer(
@@ -2992,7 +2995,7 @@ async def on_message(message: Message, bot: Bot, state: FSMContext) -> None:
     current = await state.get_state()
     text = (message.text or "").strip() if message.text else ""
     uid = uid_of(message)
-    # язык: из БД / авто-ru для СНГ / иначе — обязательный выбор
+    # любое взаимодействие с ботом → пользователь в базе для retention/рефералок
     if uid and uid not in _user_lang:
         tg_lang = message.from_user.language_code if message.from_user else None
         resolved = await resolve_user_lang(uid, tg_lang)
@@ -3002,6 +3005,12 @@ async def on_message(message: Message, bot: Bot, state: FSMContext) -> None:
                 reply_markup=language_kb(),
             )
             return
+    elif uid:
+        try:
+            uname = (message.from_user.username if message.from_user else "") or ""
+            await touch_user(uid, username=uname, is_action=False)
+        except Exception:  # noqa: BLE001
+            pass
     lang = get_lang(uid)
 
     # Нижнее меню всегда важнее текущего сценария (обложка / фильтр / поиск)
