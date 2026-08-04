@@ -124,7 +124,7 @@ def _init_sync() -> None:
                 starts_at TEXT NOT NULL,
                 ends_at TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'open',
-                winners_count INTEGER NOT NULL DEFAULT 10,
+                winners_count INTEGER NOT NULL DEFAULT 3,
                 gift_note TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL
             )
@@ -170,6 +170,16 @@ def _init_sync() -> None:
 
 def init_referral_db() -> None:
     _init_sync()
+    # подтянуть winners_count из env для текущего open-сезона
+    try:
+        with _connect() as conn:
+            conn.execute(
+                "UPDATE referral_seasons SET winners_count = ? WHERE status = 'open'",
+                (max(1, int(REF_WINNERS_COUNT)),),
+            )
+            conn.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync winners_count: %s", exc)
     logger.info(
         "Referral DB ready: season=%s min_days=%s min_actions=%s winners=%s",
         REF_SEASON_NAME,
@@ -232,7 +242,7 @@ def _row_season(r: sqlite3.Row) -> Season:
         starts_at=r["starts_at"] or "",
         ends_at=r["ends_at"] or "",
         status=r["status"] or "closed",
-        winners_count=int(r["winners_count"] or 10),
+        winners_count=int(r["winners_count"] or REF_WINNERS_COUNT),
         gift_note=r["gift_note"] or "",
     )
 

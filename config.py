@@ -148,9 +148,9 @@ try:
 except ValueError:
     REF_MIN_ACTIONS = 3
 try:
-    REF_WINNERS_COUNT = max(1, int(_get("REF_WINNERS_COUNT", "10") or "10"))
+    REF_WINNERS_COUNT = max(1, int(_get("REF_WINNERS_COUNT", "3") or "3"))
 except ValueError:
-    REF_WINNERS_COUNT = 10
+    REF_WINNERS_COUNT = 3
 REF_ADMIN_IDS: set[int] = set()
 for _part in (_get("REF_ADMIN_IDS") or "").replace(";", ",").split(","):
     _part = _part.strip()

@@ -270,49 +270,58 @@ _STRINGS: dict[str, dict[str, str]] = {
     },
     "ret_season": {
         "ru": (
-            "🎁 <b>{season}</b> идёт сейчас ({dates})\n\n"
-            "У вас: <b>{qualified}</b> засчитано · <b>{pending}</b> в процессе.\n"
-            "Приз сезона — NFT-подарок Telegram топ пригласившим.\n\n"
-            "Ваша ссылка:\n<code>{link}</code>\n\n"
-            "Или просто пришлите трек в чат 🎵"
+            "🎧 Давно не искали музыку?\n\n"
+            "Пришлите название или ссылку — найдём трек и MP3.\n\n"
+            "🎁 Кстати, идёт <b>{season}</b> ({dates}): "
+            "топ-{winners} пригласивших получат NFT-подарок Telegram.\n"
+            "Ваша ссылка: <code>{link}</code>"
         ),
         "en": (
-            "🎁 <b>{season}</b> is live ({dates})\n\n"
-            "Your stats: <b>{qualified}</b> qualified · <b>{pending}</b> pending.\n"
-            "Season prize — a Telegram NFT gift for top inviters.\n\n"
-            "Your link:\n<code>{link}</code>\n\n"
-            "Or just send a track name 🎵"
+            "🎧 Haven't searched for music in a while?\n\n"
+            "Send a title or link — we'll find the track and MP3.\n\n"
+            "🎁 By the way, <b>{season}</b> is live ({dates}): "
+            "top-{winners} inviters get a Telegram NFT gift.\n"
+            "Your link: <code>{link}</code>"
         ),
     },
     "ret_invite": {
         "ru": (
-            "✨ Сезон <b>{season}</b>: топ-{winners} получат NFT-подарок Telegram.\n\n"
-            "Пригласите друзей:\n<code>{link}</code>\n\n"
-            "Реферал засчитывается после реальной активности — без накрутки."
+            "🎧 Загляните за новым треком\n\n"
+            "Киньте название или Spotify / Apple / YouTube ссылку.\n\n"
+            "🎁 Сезон <b>{season}</b>: приз — NFT топ-{winners}.\n"
+            "<code>{link}</code>"
         ),
         "en": (
-            "✨ Season <b>{season}</b>: top-{winners} get a Telegram NFT gift.\n\n"
-            "Invite friends:\n<code>{link}</code>\n\n"
-            "Referrals count after real activity — no spam accounts."
+            "🎧 Come grab a new track\n\n"
+            "Drop a title or a Spotify / Apple / YouTube link.\n\n"
+            "🎁 <b>{season}</b> season: NFT prize for top-{winners}.\n"
+            "<code>{link}</code>"
         ),
     },
     "ret_music": {
         "ru": (
             "🎧 Давно не искали музыку?\n\n"
             "Пришлите название или ссылку (Spotify / Apple / YouTube) — "
-            "найдём трек и MP3.\n"
-            "Есть сезон рефералки с NFT-призом — кнопка ниже."
+            "найдём трек и MP3."
         ),
         "en": (
             "🎧 Haven't searched for music in a while?\n\n"
-            "Send a title or link (Spotify / Apple / YouTube) — "
-            "we'll find the track and MP3.\n"
-            "Referral season with an NFT prize is on — button below."
+            "Send a title or a Spotify / Apple / YouTube link — "
+            "we'll find the track and MP3."
+        ),
+    },
+    "ret_music_alt": {
+        "ru": (
+            "🎵 Есть минутка на трек?\n\n"
+            "Напишите артиста или киньте ссылку — бот найдёт и скачает MP3."
+        ),
+        "en": (
+            "🎵 Got a minute for a track?\n\n"
+            "Type an artist or paste a link — the bot will find and download the MP3."
         ),
     },
     "ret_btn_search": {"ru": "🔍 Искать трек", "en": "🔍 Search a track"},
     "ret_btn_ref": {"ru": "🎁 Рефералка", "en": "🎁 Referral"},
-    "ret_btn_off": {"ru": "🔕 Не напоминать", "en": "🔕 Mute reminders"},
     "ret_off_done": {
         "ru": "Ок, больше не будем напоминать. Включить снова: /remind on",
         "en": "Got it — no more reminders. Re-enable: /remind on",

@@ -171,19 +171,11 @@ def retention_kb(lang: str = DEFAULT_LANG) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text=t("ret_btn_search", lang_n),
                     callback_data="mode:text",
-                )
-            ],
-            [
+                ),
                 InlineKeyboardButton(
                     text=t("ret_btn_ref", lang_n),
                     callback_data="ref:home",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=t("ret_btn_off", lang_n),
-                    callback_data="ret:off",
-                )
+                ),
             ],
         ]
     )
@@ -193,36 +185,53 @@ async def build_reminder_text(user_id: int) -> tuple[str, str]:
     """Возвращает (lang, html_text)."""
     saved = await get_user_language(user_id)
     lang = normalize_lang(saved or DEFAULT_LANG)
-    season, stats = await referral_stats(user_id)
-    # ротация по user_id + дню
+    season, _stats = await referral_stats(user_id)
     day = _now().timetuple().tm_yday
     variant = (user_id + day) % 3
 
     if season and season.status == "open":
         dates = format_season_dates(season)
         link = referral_link(user_id)
-        if variant == 0:
+        winners = season.winners_count
+        if lang == "en":
+            # EN: музыкальные варианты + лёгкий сезон
+            if variant == 0:
+                text = t("ret_music", lang)
+            elif variant == 1:
+                text = t("ret_music_alt", lang)
+            else:
+                text = t(
+                    "ret_season",
+                    lang,
+                    season=season.name,
+                    dates=dates,
+                    winners=winners,
+                    link=link,
+                )
+        elif variant == 0:
+            text = t("ret_music", lang)
+        elif variant == 1:
             text = t(
                 "ret_season",
                 lang,
                 season=season.name,
                 dates=dates,
-                qualified=stats.get("qualified", 0),
-                pending=stats.get("pending", 0),
+                winners=winners,
                 link=link,
             )
-        elif variant == 1:
+        else:
             text = t(
                 "ret_invite",
                 lang,
                 season=season.name,
-                winners=season.winners_count,
+                winners=winners,
                 link=link,
             )
-        else:
-            text = t("ret_music", lang)
     else:
-        text = t("ret_music", lang)
+        text = t(
+            "ret_music_alt" if lang == "en" and variant else "ret_music",
+            lang,
+        )
     return lang, text
 
 
