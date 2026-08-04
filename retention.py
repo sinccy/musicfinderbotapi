@@ -131,7 +131,7 @@ def _backfill_bot_users_sync() -> int:
             sources.append("SELECT DISTINCT referee_id AS user_id FROM referrals")
         if not sources:
             return 0
-        union = " UNION ".join(f"({s})" for s in sources)
+        union = " UNION ".join(sources)
         rows = conn.execute(union).fetchall()
         for r in rows:
             uid = int(r[0] or 0)
