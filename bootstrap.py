@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import time
 from pathlib import Path
 from typing import Optional
 from urllib.request import urlopen
@@ -455,9 +456,85 @@ def _ensure_pip_ffmpeg() -> None:
     )
 
 
+def _upgrade_stamp_path() -> Path:
+    root = _install_root() or Path("./data")
+    return root / ".ytdlp_ok"
+
+
 def _upgrade_ytdlp() -> None:
-    """Свежий yt-dlp[default] + ejs + curl_cffi — иначе только images / bot-check."""
-    logger.info("Upgrading yt-dlp[default] + yt-dlp-ejs + curl_cffi…")
+    """
+    Не гоняем pip -U на каждом рестарте — это и раздувает RSS до ~700–800MB.
+    Апгрейд только если:
+      • yt-dlp/ejs нет
+      • YTDLP_FORCE_UPGRADE=1
+      • прошло ≥ YTDLP_UPGRADE_DAYS (по умолчанию 14)
+    """
+    force = (os.environ.get("YTDLP_FORCE_UPGRADE") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    try:
+        days = max(1, int(os.environ.get("YTDLP_UPGRADE_DAYS") or "14"))
+    except ValueError:
+        days = 14
+
+    stamp = _upgrade_stamp_path()
+    have_ytdlp = False
+    ytdlp_ver = "?"
+    try:
+        from yt_dlp.version import __version__ as ytdlp_ver  # type: ignore
+
+        have_ytdlp = True
+    except Exception:  # noqa: BLE001
+        have_ytdlp = False
+    have_ejs = False
+    try:
+        import yt_dlp_ejs  # type: ignore  # noqa: F401
+
+        have_ejs = True
+    except Exception:  # noqa: BLE001
+        have_ejs = False
+
+    stamp_fresh = False
+    if stamp.is_file():
+        try:
+            age = time.time() - stamp.stat().st_mtime
+            stamp_fresh = age < days * 86400
+        except OSError:
+            stamp_fresh = False
+
+    if have_ytdlp and have_ejs and not force:
+        if stamp_fresh:
+            logger.info(
+                "yt-dlp ok (skip pip upgrade): %s ejs=yes stamp<%sd",
+                ytdlp_ver,
+                days,
+            )
+            return
+        if not stamp.is_file():
+            # уже стоит — не гоняем pip ради «первого» апдейта кода
+            try:
+                stamp.parent.mkdir(parents=True, exist_ok=True)
+                stamp.write_text(_now_stamp(), encoding="utf-8")
+            except OSError:
+                pass
+            logger.info(
+                "yt-dlp ok (skip pip, write stamp): %s ejs=yes",
+                ytdlp_ver,
+            )
+            return
+        # stamp просрочен → обновим ниже
+        logger.info("yt-dlp stamp older than %sd — upgrading…", days)
+
+    logger.info(
+        "Installing/upgrading yt-dlp[default] + yt-dlp-ejs + curl_cffi "
+        "(force=%s have=%s/%s)…",
+        force,
+        have_ytdlp,
+        have_ejs,
+    )
     subprocess.run(
         [
             sys.executable,
@@ -489,6 +566,17 @@ def _upgrade_ytdlp() -> None:
         )
     except Exception:  # noqa: BLE001
         logger.warning("yt-dlp-ejs missing — YouTube formats may fail")
+    try:
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.write_text(_now_stamp(), encoding="utf-8")
+    except OSError as exc:
+        logger.debug("upgrade stamp: %s", exc)
+
+
+def _now_stamp() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
 
 
 def ensure_system_deps() -> None:
@@ -503,8 +591,17 @@ def ensure_system_deps() -> None:
     if need_ffmpeg or need_node or need_tesseract:
         logger.info("Bothost: installing system deps (ffmpeg, nodejs, tesseract)…")
         _install_apt_packages()
-    deno = _install_deno()
+    # Deno только если явно просят — Node≥22 достаточно, скачивание deno жрёт RAM
+    prefer_deno = (os.environ.get("YTDLP_PREFER_DENO") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    deno = _install_deno() if prefer_deno else ""
     node = _install_node_tarball()
+    if not deno and prefer_deno:
+        deno = _install_deno()
     _ensure_pip_ffmpeg()
     _upgrade_ytdlp()
     node = node or _preferred_node_bin() or _which("node", "nodejs") or ""
@@ -524,6 +621,12 @@ def ensure_system_deps() -> None:
         deno or "none",
         _which("tesseract") or "none",
     )
+    try:
+        from memory_trim import trim_memory
+
+        trim_memory("bootstrap_deps")
+    except Exception:  # noqa: BLE001
+        pass
     # EJS probe — после cookies в bot.py (иначе ложный BROKEN без LOGIN)
 
 
