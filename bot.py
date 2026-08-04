@@ -2995,7 +2995,7 @@ async def on_message(message: Message, bot: Bot, state: FSMContext) -> None:
     current = await state.get_state()
     text = (message.text or "").strip() if message.text else ""
     uid = uid_of(message)
-    # любое взаимодействие с ботом → пользователь в базе для retention/рефералок
+    # язык + регистрация в bot_users (для retention)
     if uid and uid not in _user_lang:
         tg_lang = message.from_user.language_code if message.from_user else None
         resolved = await resolve_user_lang(uid, tg_lang)
@@ -3005,7 +3005,7 @@ async def on_message(message: Message, bot: Bot, state: FSMContext) -> None:
                 reply_markup=language_kb(),
             )
             return
-    elif uid:
+    if uid:
         try:
             uname = (message.from_user.username if message.from_user else "") or ""
             await touch_user(uid, username=uname, is_action=False)
