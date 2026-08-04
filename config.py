@@ -157,6 +157,40 @@ for _part in (_get("REF_ADMIN_IDS") or "").replace(";", ",").split(","):
     if _part.isdigit():
         REF_ADMIN_IDS.add(int(_part))
 
+# Удержание / напоминания
+_RET_RAW = (_get("RETENTION_REMINDERS") or "1").strip().lower()
+RETENTION_REMINDERS = _RET_RAW not in {"0", "false", "no", "off"}
+try:
+    RETENTION_INTERVAL_HOURS = max(
+        1, int(_get("RETENTION_INTERVAL_HOURS", "10") or "10")
+    )
+except ValueError:
+    RETENTION_INTERVAL_HOURS = 10
+try:
+    RETENTION_INACTIVE_HOURS = max(
+        1, int(_get("RETENTION_INACTIVE_HOURS", "8") or "8")
+    )
+except ValueError:
+    RETENTION_INACTIVE_HOURS = 8
+try:
+    RETENTION_MAX_IDLE_DAYS = max(
+        1, int(_get("RETENTION_MAX_IDLE_DAYS", "21") or "21")
+    )
+except ValueError:
+    RETENTION_MAX_IDLE_DAYS = 21
+try:
+    RETENTION_MAX_PER_RUN = max(
+        1, int(_get("RETENTION_MAX_PER_RUN", "80") or "80")
+    )
+except ValueError:
+    RETENTION_MAX_PER_RUN = 80
+try:
+    RETENTION_BATCH_PAUSE_MS = max(
+        0, int(_get("RETENTION_BATCH_PAUSE_MS", "60") or "60")
+    )
+except ValueError:
+    RETENTION_BATCH_PAUSE_MS = 60
+
 SPOTIFY_CLIENT_ID = _get("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = _get("SPOTIFY_CLIENT_SECRET")
 YANDEX_MUSIC_TOKEN = _get("YANDEX_MUSIC_TOKEN")

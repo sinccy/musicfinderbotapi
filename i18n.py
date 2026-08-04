@@ -268,6 +268,59 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ru": "⏳ Очередь скачивания: позиция <b>{pos}</b> (ждут: {waiting})…",
         "en": "⏳ Download queue: position <b>{pos}</b> (waiting: {waiting})…",
     },
+    "ret_season": {
+        "ru": (
+            "🎁 <b>{season}</b> идёт сейчас ({dates})\n\n"
+            "У вас: <b>{qualified}</b> засчитано · <b>{pending}</b> в процессе.\n"
+            "Приз сезона — NFT-подарок Telegram топ пригласившим.\n\n"
+            "Ваша ссылка:\n<code>{link}</code>\n\n"
+            "Или просто пришлите трек в чат 🎵"
+        ),
+        "en": (
+            "🎁 <b>{season}</b> is live ({dates})\n\n"
+            "Your stats: <b>{qualified}</b> qualified · <b>{pending}</b> pending.\n"
+            "Season prize — a Telegram NFT gift for top inviters.\n\n"
+            "Your link:\n<code>{link}</code>\n\n"
+            "Or just send a track name 🎵"
+        ),
+    },
+    "ret_invite": {
+        "ru": (
+            "✨ Сезон <b>{season}</b>: топ-{winners} получат NFT-подарок Telegram.\n\n"
+            "Пригласите друзей:\n<code>{link}</code>\n\n"
+            "Реферал засчитывается после реальной активности — без накрутки."
+        ),
+        "en": (
+            "✨ Season <b>{season}</b>: top-{winners} get a Telegram NFT gift.\n\n"
+            "Invite friends:\n<code>{link}</code>\n\n"
+            "Referrals count after real activity — no spam accounts."
+        ),
+    },
+    "ret_music": {
+        "ru": (
+            "🎧 Давно не искали музыку?\n\n"
+            "Пришлите название или ссылку (Spotify / Apple / YouTube) — "
+            "найдём трек и MP3.\n"
+            "Есть сезон рефералки с NFT-призом — кнопка ниже."
+        ),
+        "en": (
+            "🎧 Haven't searched for music in a while?\n\n"
+            "Send a title or link (Spotify / Apple / YouTube) — "
+            "we'll find the track and MP3.\n"
+            "Referral season with an NFT prize is on — button below."
+        ),
+    },
+    "ret_btn_search": {"ru": "🔍 Искать трек", "en": "🔍 Search a track"},
+    "ret_btn_ref": {"ru": "🎁 Рефералка", "en": "🎁 Referral"},
+    "ret_btn_off": {"ru": "🔕 Не напоминать", "en": "🔕 Mute reminders"},
+    "ret_off_done": {
+        "ru": "Ок, больше не будем напоминать. Включить снова: /remind on",
+        "en": "Got it — no more reminders. Re-enable: /remind on",
+    },
+    "ret_on_done": {
+        "ru": "Напоминания снова включены ✅",
+        "en": "Reminders enabled again ✅",
+    },
 }
 
 

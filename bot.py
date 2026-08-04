@@ -113,6 +113,13 @@ from keyboards import (
     youtube_results_kb,
 )
 from download_queue import download_slot, format_capacity_report
+from retention import (
+    disable_reminders,
+    enable_reminders,
+    init_retention_db,
+    retention_loop,
+    send_retention_batch,
+)
 from referrals import (
     attach_referral,
     close_current_season,
@@ -712,6 +719,54 @@ async def cmd_capacity(message: Message) -> None:
     if not is_ref_admin(uid_of(message)):
         return
     await message.answer(format_capacity_report())
+
+
+async def cmd_remind(message: Message, command: CommandObject, bot: Bot) -> None:
+    """
+    /remind on|off — для любого юзера
+    /remind now — админ: отправить волну сейчас
+    /remind me — админ: тест только себе
+    """
+    uid = uid_of(message)
+    lang = get_lang(uid)
+    args = (command.args or "").strip().lower()
+    if args in {"off", "stop", "mute"}:
+        await disable_reminders(uid)
+        await message.answer(t("ret_off_done", lang))
+        return
+    if args in {"on", "enable"}:
+        await enable_reminders(uid)
+        await message.answer(t("ret_on_done", lang))
+        return
+    if args == "me":
+        if not is_ref_admin(uid):
+            return
+        stats = await send_retention_batch(bot, force_user_ids=[uid])
+        await message.answer(f"Тест себе: {stats}")
+        return
+    if args == "now":
+        if not is_ref_admin(uid):
+            return
+        stats = await send_retention_batch(bot)
+        await message.answer(
+            "Волна напоминаний:\n"
+            f"sent=<b>{stats.get('sent', 0)}</b> "
+            f"blocked=<b>{stats.get('blocked', 0)}</b> "
+            f"fail=<b>{stats.get('fail', 0)}</b> "
+            f"candidates=<b>{stats.get('candidates', 0)}</b>"
+        )
+        return
+    await message.answer(
+        "Напоминания:\n"
+        "<code>/remind on</code> — включить\n"
+        "<code>/remind off</code> — выключить\n"
+        + (
+            "<code>/remind now</code> — волна сейчас (админ)\n"
+            "<code>/remind me</code> — тест себе (админ)"
+            if is_ref_admin(uid)
+            else ""
+        )
+    )
 
 
 async def cmd_refadmin(message: Message) -> None:
@@ -3143,6 +3198,18 @@ async def on_callback(callback: CallbackQuery, bot: Bot, state: FSMContext) -> N
             await show_referral_home(msg, uid, edit=True)
         return
 
+    if data == "ret:off":
+        await disable_reminders(uid)
+        await callback.answer()
+        if msg:
+            await ui_show(
+                msg,
+                t("ret_off_done", get_lang(uid)),
+                reply_markup=back_to_menu_kb(),
+                edit=True,
+            )
+        return
+
     if uid and uid not in _user_lang:
         tg_lang = callback.from_user.language_code if callback.from_user else None
         resolved = await resolve_user_lang(uid, tg_lang)
@@ -4332,6 +4399,7 @@ async def main() -> None:
     validate_token(config.BOT_TOKEN)
     init_playlist_db()
     init_referral_db()
+    init_retention_db()
     import shutil
 
     from config import YTMUSIC_PROXY, refresh_ytdlp_cookies, ytdlp_cookies_status
@@ -4417,6 +4485,7 @@ async def main() -> None:
     dp.message.register(cmd_ref, Command("ref"))
     dp.message.register(cmd_refadmin, Command("refadmin"))
     dp.message.register(cmd_capacity, Command("capacity"))
+    dp.message.register(cmd_remind, Command("remind"))
     dp.message.register(cmd_refseason, Command("refseason"))
     dp.message.register(cmd_refprize, Command("refprize"))
     dp.callback_query.register(on_callback)
@@ -4459,11 +4528,13 @@ async def main() -> None:
 
     watchdog = asyncio.create_task(_keep_polling_exclusive())
     trim_task = asyncio.create_task(_periodic_memory_trim())
+    retention_task = asyncio.create_task(retention_loop(bot))
     try:
         await dp.start_polling(bot, handle_signals=True)
     finally:
         watchdog.cancel()
         trim_task.cancel()
+        retention_task.cancel()
         await close_session()
         trim_memory("shutdown")
 
