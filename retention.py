@@ -29,7 +29,7 @@ from config import (
     RETENTION_MAX_PER_RUN,
     RETENTION_REMINDERS,
 )
-from db import resolve_playlist_db
+from db import iter_user_ids_from_db_file, legacy_playlist_db_paths, resolve_playlist_db
 from i18n import DEFAULT_LANG, normalize_lang, t
 from playlists import get_user_language
 from referrals import (
@@ -103,7 +103,13 @@ def init_retention_db() -> None:
             )
         conn.commit()
     n = _backfill_bot_users_sync()
-    logger.info("Retention ready db=%s backfilled=%s", DB_PATH, n)
+    n2 = _merge_legacy_user_ids_sync()
+    logger.info(
+        "Retention ready db=%s backfilled=%s legacy_merged=%s",
+        DB_PATH,
+        n,
+        n2,
+    )
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
@@ -114,9 +120,28 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     return bool(row)
 
 
+def _insert_user_ids(conn: sqlite3.Connection, ids: set[int]) -> int:
+    now = _now_iso()
+    added = 0
+    for uid in ids:
+        if not uid:
+            continue
+        cur = conn.execute(
+            """
+            INSERT OR IGNORE INTO bot_users
+                (user_id, username, first_seen_at, last_active_at,
+                 action_count, first_action_at, last_action_at,
+                 last_reminder_at, reminders_enabled)
+            VALUES (?, '', ?, ?, 0, '', '', '', 1)
+            """,
+            (uid, now, now),
+        )
+        added += int(cur.rowcount or 0)
+    return added
+
+
 def _backfill_bot_users_sync() -> int:
     """Подтянуть user_id из истории скачиваний/поиска/prefs/рефералок."""
-    now = _now_iso()
     added = 0
     with _connect() as conn:
         sources: list[str] = []
@@ -126,6 +151,8 @@ def _backfill_bot_users_sync() -> int:
             sources.append("SELECT DISTINCT user_id FROM search_history")
         if _table_exists(conn, "user_prefs"):
             sources.append("SELECT DISTINCT user_id FROM user_prefs")
+        if _table_exists(conn, "user_playlists"):
+            sources.append("SELECT DISTINCT user_id FROM user_playlists")
         if _table_exists(conn, "referrals"):
             sources.append("SELECT DISTINCT referrer_id AS user_id FROM referrals")
             sources.append("SELECT DISTINCT referee_id AS user_id FROM referrals")
@@ -133,29 +160,39 @@ def _backfill_bot_users_sync() -> int:
             return 0
         union = " UNION ".join(sources)
         rows = conn.execute(union).fetchall()
-        for r in rows:
-            uid = int(r[0] or 0)
-            if not uid:
+        ids = {int(r[0] or 0) for r in rows if r[0]}
+        added = _insert_user_ids(conn, ids)
+        conn.commit()
+    return added
+
+
+def _merge_legacy_user_ids_sync() -> int:
+    """Достать user_id из старых playlist.db (если остались после деплоев)."""
+    added = 0
+    current = DB_PATH.resolve()
+    all_ids: set[int] = set()
+    for path in legacy_playlist_db_paths():
+        try:
+            if path.resolve() == current:
                 continue
-            cur = conn.execute(
-                """
-                INSERT OR IGNORE INTO bot_users
-                    (user_id, username, first_seen_at, last_active_at,
-                     action_count, first_action_at, last_action_at,
-                     last_reminder_at, reminders_enabled)
-                VALUES (?, '', ?, ?, 0, '', '', '', 1)
-                """,
-                (uid, now, now),
-            )
-            added += int(cur.rowcount or 0)
+        except OSError:
+            pass
+        found = iter_user_ids_from_db_file(path)
+        if found:
+            logger.info("Legacy DB %s → %s user ids", path, len(found))
+            all_ids |= found
+    if not all_ids:
+        return 0
+    with _connect() as conn:
+        added = _insert_user_ids(conn, all_ids)
         conn.commit()
     return added
 
 
 def _candidates_sync(limit: int, *, force: bool = False) -> list[int]:
     """
-    force=True (/remind now): игнор «молчит 8ч» и «уже слали 10ч»,
-    только reminders_enabled + не старше MAX_IDLE_DAYS.
+    force=True (/remind now): ВСЕ с reminders_enabled=1 (без idle/gap фильтров).
+    Обычный режим: молчит ≥INACTIVE_HOURS, не чаще INTERVAL, не старше MAX_IDLE_DAYS.
     """
     init_retention_db()
     now = _now()
@@ -163,6 +200,19 @@ def _candidates_sync(limit: int, *, force: bool = False) -> list[int]:
     max_idle = now - timedelta(days=max(1, int(RETENTION_MAX_IDLE_DAYS)))
     min_gap = now - timedelta(hours=max(1, int(RETENTION_INTERVAL_HOURS)))
     with _connect() as conn:
+        if force:
+            rows = conn.execute(
+                """
+                SELECT user_id, last_active_at, last_reminder_at
+                FROM bot_users
+                WHERE COALESCE(reminders_enabled, 1) = 1
+                ORDER BY last_active_at DESC
+                LIMIT ?
+                """,
+                (max(limit, 1),),
+            ).fetchall()
+            return [int(r["user_id"]) for r in rows]
+
         rows = conn.execute(
             """
             SELECT user_id, last_active_at, last_reminder_at, reminders_enabled
@@ -180,14 +230,12 @@ def _candidates_sync(limit: int, *, force: bool = False) -> list[int]:
         last_rem = _parse_iso(r["last_reminder_at"] or "")
         if not last_active:
             continue
-        # совсем пропал — не спамим даже в force
         if last_active < max_idle:
             continue
-        if not force:
-            if last_active > min_idle:
-                continue
-            if last_rem and last_rem > min_gap:
-                continue
+        if last_active > min_idle:
+            continue
+        if last_rem and last_rem > min_gap:
+            continue
         out.append(uid)
         if len(out) >= limit:
             break
@@ -329,11 +377,9 @@ async def send_retention_batch(
     if force_user_ids is not None:
         ids = force_user_ids
     else:
-        ids = await asyncio.to_thread(
-            _candidates_sync,
-            max(1, int(RETENTION_MAX_PER_RUN)),
-            force=force,
-        )
+        # force = вся аудитория из bot_users; auto = лимит за прогон
+        lim = 50_000 if force else max(1, int(RETENTION_MAX_PER_RUN))
+        ids = await asyncio.to_thread(_candidates_sync, lim, force=force)
     sent = skip = fail = blocked = 0
     pause = max(0, int(RETENTION_BATCH_PAUSE_MS)) / 1000.0
 
