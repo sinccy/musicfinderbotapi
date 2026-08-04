@@ -180,13 +180,22 @@ def init_referral_db() -> None:
 
 
 def _ensure_default_season_sync() -> None:
-    """Если нет open-сезона — создаём из env (или продлеваем дефолт на 90 дней)."""
+    """Создаёт первый сезон из env только если таблицы сезонов пусты.
+
+    Если сезон уже закрывали — новый НЕ поднимаем автоматически
+    (иначе /refseason close бессмысленен).
+    """
     with _connect() as conn:
-        row = conn.execute(
+        open_row = conn.execute(
             "SELECT id FROM referral_seasons WHERE status = 'open' "
             "ORDER BY id DESC LIMIT 1"
         ).fetchone()
-        if row:
+        if open_row:
+            return
+        any_row = conn.execute(
+            "SELECT id FROM referral_seasons LIMIT 1"
+        ).fetchone()
+        if any_row:
             return
         start = _parse_iso(REF_SEASON_START) or _now()
         end = _parse_iso(REF_SEASON_END) or (start + timedelta(days=90))

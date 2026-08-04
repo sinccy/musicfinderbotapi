@@ -1755,6 +1755,8 @@ async def handle_text_search(
     text = (text or "").strip()
     if not text:
         return
+    # любое осмысленное действие поиска → прогресс реферала
+    await note_user_action(uid)
 
     # ссылка в любом виде текста → единый resolve
     url = extract_first_url(text)
