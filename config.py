@@ -255,7 +255,27 @@ def ytdlp_cookies_status() -> dict[str, object]:
 # нужен прокси/VPN с выходом в этот регион (YTMUSIC_PROXY).
 YTMUSIC_LOCATION = (_get("YTMUSIC_LOCATION", "US") or "US").upper()
 YTMUSIC_LANGUAGE = _get("YTMUSIC_LANGUAGE", "en") or "en"
-YTMUSIC_PROXY = _get("YTMUSIC_PROXY") or _get("YTM_PROXY")
+
+
+def _parse_proxy_list() -> tuple[str, ...]:
+    """YTMUSIC_PROXY + YTMUSIC_PROXIES (comma/;) — ротация при antibot."""
+    primary = _get("YTMUSIC_PROXY") or _get("YTM_PROXY")
+    extra = _get("YTMUSIC_PROXIES") or _get("YTM_PROXIES")
+    out: list[str] = []
+    for chunk in (primary, extra):
+        if not chunk:
+            continue
+        for part in chunk.replace(";", ",").split(","):
+            p = part.strip()
+            if not p or p.lower() in {"none", "off", "0", "false"}:
+                continue
+            if p not in out:
+                out.append(p)
+    return tuple(out)
+
+
+YTMUSIC_PROXIES: tuple[str, ...] = _parse_proxy_list()
+YTMUSIC_PROXY = YTMUSIC_PROXIES[0] if YTMUSIC_PROXIES else ""
 
 # Свой Cobalt instance (публичные api.cobalt.tools требуют JWT)
 COBALT_API_URL = (_get("COBALT_API_URL") or "").rstrip("/") + (

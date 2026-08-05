@@ -41,6 +41,7 @@ from config import (
     YTDLP_PROXY,
     YTMUSIC_LANGUAGE,
     YTMUSIC_LOCATION,
+    YTMUSIC_PROXIES,
     YTMUSIC_PROXY,
 )
 
@@ -74,6 +75,8 @@ _MAX_TRACK_SEC = 15 * 60
 # Ремиксы / не те версии — понижаем, если их нет в запросе
 _BAD_VERSION_RE = re.compile(
     r"(slowed|reverb|speed\s*up|sped\s*up|nightcore|8d\s*audio|"
+    r"3d\s*audio|bass\s*boost(?:ed)?|enhanced\s*(?:3d|bass|audio)|"
+    r"spatial\s*audio|earrape|"
     r"karaoke|instrumental|fan\s*made|ai\s*cover|cover\s*by|"
     r"mashup|bootleg|minus|минус|минусовка|\bremix\b|"
     r"\breverse(?:d)?\b|reversed\s*music|"
@@ -101,6 +104,10 @@ _JUNK_VIDEO_RE = re.compile(
     r"\breaction\b|"
     r"\btutorial\b|"
     r"\bbreakdown\b|"
+    r"bass\s*boost|"
+    r"3d\s*audio|"
+    r"8d\s*audio|"
+    r"earrape|"
     r"extended\s+snippet|"
     r"new\s+snippet|"
     r"\bcover\s*by\b|"
@@ -726,6 +733,21 @@ async def download_track(
             return None
         return result
 
+    async def _try_ytdlp(
+        url: str,
+        dest: Path,
+        *,
+        label: str,
+        timeout_s: float,
+    ) -> Optional[DownloadedAudio]:
+        try:
+            return await _download_ytdlp_async(
+                url, dest, source="", timeout=timeout_s, set_pct=_set_pct
+            )
+        except DownloadError as exc:
+            logger.warning("%s download aborted: %s", label, exc)
+            return None
+
     async def _collect_sc_yt(expected: Optional[int]) -> list[DownloadedAudio]:
         found: list[DownloadedAudio] = []
         from utils import extract_youtube_video_id as _ext_vid
@@ -736,8 +758,8 @@ async def download_track(
                 url = normalize_youtube_watch_url(vid)
                 logger.info("ytmusic album track: %s", url)
                 adir = Path(tempfile.mkdtemp(prefix="tgmusic_alb_"))
-                result = await _download_ytdlp_async(
-                    url, adir, source="", timeout=timeout, set_pct=_set_pct
+                result = await _try_ytdlp(
+                    url, adir, label="ytmusic-album", timeout_s=timeout
                 )
                 ok = _accept(
                     result,
@@ -756,12 +778,8 @@ async def download_track(
         if ytm_url and ytm_vid not in skip_vids:
             logger.info("ytmusic pick: %s", ytm_url)
             ytm_dir = Path(tempfile.mkdtemp(prefix="tgmusic_ytm_"))
-            result = await _download_ytdlp_async(
-                ytm_url,
-                ytm_dir,
-                source="",
-                timeout=timeout,
-                set_pct=_set_pct,
+            result = await _try_ytdlp(
+                ytm_url, ytm_dir, label="ytmusic", timeout_s=timeout
             )
             ok = _accept(result, label="ytmusic", expected=expected)
             if ok is not None:
@@ -774,12 +792,11 @@ async def download_track(
         )
         if sc_url:
             logger.info("soundcloud pick: %s", sc_url)
-            result = await _download_ytdlp_async(
+            result = await _try_ytdlp(
                 sc_url,
                 tmp_dir,
-                source="",
-                timeout=min(90.0, timeout),
-                set_pct=_set_pct,
+                label="soundcloud",
+                timeout_s=min(90.0, timeout),
             )
             ok = _accept(result, label="soundcloud", expected=expected)
             if ok is not None:
@@ -790,29 +807,29 @@ async def download_track(
             if not direct_yt
             else f"{artist} {title} {album}".strip()
         )
-        yt_url = await _resolve_best_youtube(
+        yt_urls = await _resolve_youtube_candidates(
             artist=artist,
             title=title,
             query=search_q,
             expected=expected,
             album=album,
             skip_ids=skip_vids,
+            limit=4,
         )
-        yt_vid = _ext_vid(yt_url) if yt_url else ""
-        if yt_url and yt_vid not in skip_vids:
+        for yt_url in yt_urls:
+            yt_vid = _ext_vid(yt_url) if yt_url else ""
+            if not yt_url or yt_vid in skip_vids:
+                continue
             logger.info("youtube pick: %s", yt_url)
             yt_dir = Path(tempfile.mkdtemp(prefix="tgmusic_yt_"))
-            result = await _download_ytdlp_async(
-                yt_url,
-                yt_dir,
-                source="",
-                timeout=timeout,
-                set_pct=_set_pct,
+            result = await _try_ytdlp(
+                yt_url, yt_dir, label="youtube", timeout_s=timeout
             )
             ok = _accept(result, label="youtube", expected=expected)
             if ok is not None:
                 found.append(ok)
-            elif yt_vid:
+                break
+            if yt_vid:
                 skip_vids.add(yt_vid)
         return found
 
@@ -958,10 +975,11 @@ async def download_track(
                 )
 
         raise DownloadError(
-            "Не удалось скачать аудио с YouTube: на сервере не решается JS-challenge "
-            "(EJS/Node) — YouTube отдаёт только картинки вместо аудио. "
-            "Перезапустите бота и проверьте лог старта: «yt-dlp EJS probe OK». "
-            "Если там BROKEN — напишите в чат (это не cookies)."
+            "Не удалось скачать аудио. Обычно это сгоревший прокси (антибот), "
+            "UMG/гео на IP сервера, или мёртвое зеркало. "
+            "Поставьте свежий residential в YTMUSIC_PROXY "
+            "(или несколько через YTMUSIC_PROXIES) и cookies через этот же прокси. "
+            "Вчерашнее «EJS/Node» почти всегда было ложным — менялся прокси и оживало."
         )
     except DownloadError:
         raise
@@ -2581,7 +2599,7 @@ def _score_youtube_entry(
     return score
 
 
-async def _resolve_best_youtube(
+async def _resolve_youtube_candidates(
     *,
     artist: str,
     title: str,
@@ -2589,11 +2607,9 @@ async def _resolve_best_youtube(
     expected: Optional[int] = None,
     album: str = "",
     skip_ids: Optional[set[str]] = None,
-) -> str:
-    """
-    Ищет среди нескольких результатов YouTube лучший ролик.
-    Возвращает URL watch?v=… или "".
-    """
+    limit: int = 5,
+) -> list[str]:
+    """Топ URL watch?v=… по score (без bass-boost / junk)."""
     import yt_dlp  # type: ignore
 
     album = (album or "").strip()
@@ -2623,17 +2639,16 @@ async def _resolve_best_youtube(
             ]
         )
     variants.append(query)
-    # уникальные с сохранением порядка
-    seen: set[str] = set()
+    seen_q: set[str] = set()
     searches: list[str] = []
     for v in variants:
         v = (v or "").strip()
-        if v and v.lower() not in seen:
-            seen.add(v.lower())
+        if v and v.lower() not in seen_q:
+            seen_q.add(v.lower())
             searches.append(v)
 
-    def _search() -> str:
-        opts = {
+    def _search() -> list[tuple[float, str, str]]:
+        opts: dict[str, Any] = {
             "quiet": True,
             "no_warnings": True,
             "skip_download": True,
@@ -2641,12 +2656,9 @@ async def _resolve_best_youtube(
             "http_headers": {"User-Agent": UA},
             "socket_timeout": 20,
         }
-        proxy = (YTMUSIC_PROXY or "").strip()
-        if proxy:
-            opts["proxy"] = proxy
-        best_id = ""
-        best_score = -999.0
-        best_title = ""
+        # поиск без proxy — proxy часто antibot и ломает ytsearch
+        scored: list[tuple[float, str, str]] = []
+        seen_ids: set[str] = set(banned)
         with yt_dlp.YoutubeDL(opts) as ydl:
             for q in searches[:6]:
                 try:
@@ -2658,7 +2670,7 @@ async def _resolve_best_youtube(
                     if not entry:
                         continue
                     vid = entry.get("id") or ""
-                    if not vid or vid in banned:
+                    if not vid or vid in seen_ids:
                         continue
                     etitle = entry.get("title") or ""
                     if _JUNK_VIDEO_RE.search(etitle) and not _JUNK_VIDEO_RE.search(
@@ -2668,45 +2680,51 @@ async def _resolve_best_youtube(
                     if _BAD_VERSION_RE.search(etitle) and not _BAD_VERSION_RE.search(
                         title or ""
                     ):
-                        # remaster/cdq только если title-core уже ок (score ниже)
                         if not re.search(r"\b(remaster|cdq|hq)\b", etitle, re.I):
                             continue
                     sc = _score_youtube_entry(
                         entry, artist=artist, title=title, expected=expected
                     )
-                    # если официальный UMG-blocked — чуть поднимаем неофициальные
                     if banned and sc >= 25:
                         sc += 5
-                    logger.debug(
-                        "yt candidate %.1f %s | %s",
-                        sc,
-                        entry.get("title"),
-                        entry.get("uploader"),
-                    )
-                    if sc > best_score:
-                        best_score = sc
-                        best_id = vid
-                        best_title = entry.get("title") or ""
-        if best_id and best_score >= 40:
-            logger.info(
-                "youtube pick score=%.1f title=%r id=%s",
-                best_score,
-                best_title,
-                best_id,
-            )
-            return f"https://www.youtube.com/watch?v={best_id}"
-        if best_id and best_score >= 25:
-            logger.info(
-                "youtube weak pick score=%.1f title=%r id=%s",
-                best_score,
-                best_title,
-                best_id,
-            )
-            return f"https://www.youtube.com/watch?v={best_id}"
-        logger.warning("no good youtube match (best=%.1f %r)", best_score, best_title)
-        return ""
+                    if sc < 25:
+                        continue
+                    seen_ids.add(vid)
+                    scored.append((sc, vid, etitle))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return scored
 
-    return await asyncio.to_thread(_search)
+    ranked = await asyncio.to_thread(_search)
+    out: list[str] = []
+    for sc, vid, etitle in ranked[: max(1, limit)]:
+        logger.info(
+            "youtube candidate score=%.1f title=%r id=%s", sc, etitle, vid
+        )
+        out.append(f"https://www.youtube.com/watch?v={vid}")
+    if not out:
+        logger.warning("no good youtube match for %r / %r", artist, title)
+    return out
+
+
+async def _resolve_best_youtube(
+    *,
+    artist: str,
+    title: str,
+    query: str,
+    expected: Optional[int] = None,
+    album: str = "",
+    skip_ids: Optional[set[str]] = None,
+) -> str:
+    cands = await _resolve_youtube_candidates(
+        artist=artist,
+        title=title,
+        query=query,
+        expected=expected,
+        album=album,
+        skip_ids=skip_ids,
+        limit=1,
+    )
+    return cands[0] if cands else ""
 
 
 def _node_bin() -> Optional[str]:
@@ -2735,20 +2753,64 @@ def _deno_bin() -> Optional[str]:
 # Telegram ~48 МБ ≈ ~25–30 мин MP3; длинные миксы не отправляются
 _MAX_YT_DURATION_SEC = 30 * 60
 
+# Прокси, на которых YouTube ответил antibot (на жизнь процесса)
+_burned_proxies: set[str] = set()
+_proxy_antibot_hits: dict[str, int] = {}
+
+
+def _proxy_host_hint(proxy: str) -> str:
+    """user:pass@host:port → host:port (без пароля в логах)."""
+    p = (proxy or "").strip()
+    if "@" in p:
+        p = p.rsplit("@", 1)[-1]
+    return p[:48]
+
+
+def _all_download_proxies() -> list[str]:
+    """Пул прокси: YTDLP_PROXY (если задан) + YTMUSIC_PROXIES."""
+    out: list[str] = []
+    explicit = (YTDLP_PROXY or "").strip()
+    if explicit and explicit.lower() not in {"none", "off", "0", "false"}:
+        out.append(explicit)
+    for p in YTMUSIC_PROXIES or ():
+        if p and p not in out:
+            out.append(p)
+    if YTMUSIC_PROXY and YTMUSIC_PROXY not in out:
+        out.append(YTMUSIC_PROXY)
+    return out
+
+
+def _alive_proxies() -> list[str]:
+    pool = _all_download_proxies()
+    alive = [p for p in pool if p not in _burned_proxies]
+    return alive if alive else list(pool)
+
+
+def _mark_proxy_antibot(proxy: str) -> None:
+    if not proxy:
+        return
+    hits = _proxy_antibot_hits.get(proxy, 0) + 1
+    _proxy_antibot_hits[proxy] = hits
+    if hits >= 2 and proxy not in _burned_proxies:
+        _burned_proxies.add(proxy)
+        logger.warning(
+            "proxy burned after antibot x%d: %s (осталось %d)",
+            hits,
+            _proxy_host_hint(proxy),
+            len(_alive_proxies()),
+        )
+
 
 def _ytdlp_download_proxy(use_proxy: bool | None) -> str:
     """
     Прокси для скачивания yt-dlp.
-    use_proxy=True → всегда YTMUSIC_PROXY / YTDLP_PROXY (UMG в NL без US-proxy мёртв).
+    use_proxy=True → первый живой из пула.
     use_proxy=False → без прокси.
-    YTDLP_PROXY=none отключает только автоподстановку, не профили с use_proxy=True.
     """
     if use_proxy is False:
         return ""
-    explicit = (YTDLP_PROXY or "").strip()
-    if explicit and explicit.lower() not in {"none", "off", "0", "false"}:
-        return explicit
-    return (YTMUSIC_PROXY or "").strip()
+    alive = _alive_proxies()
+    return alive[0] if alive else ""
 
 
 def _cookies_look_logged_in(path: str) -> bool:
@@ -2815,6 +2877,7 @@ def _build_ytdlp_cmd(
     extract_mp3: bool | None = None,
     use_proxy: bool | None = True,
     use_cookies: bool = True,
+    proxy_url: str | None = None,
 ) -> list[str]:
     cmd = [
         sys.executable,
@@ -2831,7 +2894,10 @@ def _build_ytdlp_cmd(
         "--force-ipv4",
     ]
     cmd.extend(_ytdlp_auth_args(use_cookies=use_cookies))
-    proxy = _ytdlp_download_proxy(use_proxy)
+    if proxy_url is not None:
+        proxy = proxy_url if use_proxy is not False else ""
+    else:
+        proxy = _ytdlp_download_proxy(use_proxy)
     if proxy:
         cmd.extend(["--proxy", proxy])
     is_yt = (
@@ -2883,7 +2949,6 @@ def _ytdlp_umg_blocked(joined_stderr: str) -> bool:
 def _ytdlp_retryable(joined_stderr: str) -> bool:
     low = joined_stderr.lower()
     if _ytdlp_umg_blocked(joined_stderr):
-        # UMG без прокси ≠ конец: следующий профиль с US-proxy может пройти
         return True
     return any(
         s in low
@@ -2900,17 +2965,36 @@ def _ytdlp_retryable(joined_stderr: str) -> bool:
     )
 
 
-# Порядок важен (логи Ken Carson / UMG):
-# • без proxy + cookies → антибот проходит, часто UMG/geo
-# • с proxy + cookies с домашнего IP → почти всегда «Sign in…»
-# • proxy + android БЕЗ cookies → обход antibot на DC/US proxy
-_YTDLP_PROFILES: tuple[dict[str, Any], ...] = (
+# Proxy first (UMG), потом direct (не-UMG зеркала на IP сервера).
+_YTDLP_PROXY_TEMPLATES: tuple[dict[str, Any], ...] = (
     {
-        "player_clients": "android,ios,web",
+        "player_clients": "tv_embedded,tv,android",
+        "audio_format": "bestaudio/best/18",
+        "extract_mp3": True,
+        "use_cookies": False,
+    },
+    {
+        "player_clients": "android,ios",
+        "audio_format": "bestaudio/best/18",
+        "extract_mp3": True,
+        "use_cookies": False,
+    },
+    {
+        "player_clients": "android,web",
+        "audio_format": "bestaudio/best/18",
+        "extract_mp3": True,
+        "use_cookies": True,
+    },
+)
+
+_YTDLP_DIRECT_TEMPLATES: tuple[dict[str, Any], ...] = (
+    {
+        "player_clients": "android,ios,tv_embedded,web",
         "audio_format": "bestaudio/best/18",
         "extract_mp3": True,
         "use_proxy": False,
         "use_cookies": True,
+        "proxy_url": "",
     },
     {
         "player_clients": "web",
@@ -2918,29 +3002,30 @@ _YTDLP_PROFILES: tuple[dict[str, Any], ...] = (
         "extract_mp3": True,
         "use_proxy": False,
         "use_cookies": True,
-    },
-    {
-        "player_clients": "android,ios",
-        "audio_format": "bestaudio/best/18",
-        "extract_mp3": True,
-        "use_proxy": True,
-        "use_cookies": False,
-    },
-    {
-        "player_clients": "android,web",
-        "audio_format": "bestaudio/best/18",
-        "extract_mp3": True,
-        "use_proxy": True,
-        "use_cookies": True,
-    },
-    {
-        "player_clients": "web_safari,mweb",
-        "audio_format": "18/93/92/91/bestaudio/best",
-        "extract_mp3": True,
-        "use_proxy": True,
-        "use_cookies": True,
+        "proxy_url": "",
     },
 )
+
+
+def _expand_ytdlp_profiles() -> list[dict[str, Any]]:
+    """Proxy-first × живые прокси, затем direct. Лимит ~10 попыток."""
+    out: list[dict[str, Any]] = []
+    proxies = _alive_proxies()
+    for proxy in proxies[:3]:
+        for tmpl in _YTDLP_PROXY_TEMPLATES:
+            out.append(
+                {
+                    **tmpl,
+                    "use_proxy": True,
+                    "proxy_url": proxy,
+                }
+            )
+            if len(out) >= 8:
+                break
+        if len(out) >= 8:
+            break
+    out.extend(dict(t) for t in _YTDLP_DIRECT_TEMPLATES)
+    return out[:10]
 
 
 def _ytdlp_antibot(joined_stderr: str) -> bool:
@@ -2979,9 +3064,16 @@ async def _download_ytdlp_async(
         or "youtu.be" in search
         or search.startswith("ytsearch")
     )
-    attempts: tuple[dict[str, Any], ...] = _YTDLP_PROFILES if is_yt else ({},)
+    attempts: list[dict[str, Any]] = (
+        _expand_ytdlp_profiles() if is_yt else [{}]
+    )
 
-    logger.info("yt-dlp async: %s", search)
+    logger.info(
+        "yt-dlp async: %s proxies=%d burned=%d",
+        search,
+        len(_alive_proxies()),
+        len(_burned_proxies),
+    )
     await set_pct(5)
 
     last_stderr = ""
@@ -2989,15 +3081,24 @@ async def _download_ytdlp_async(
     saw_umg_direct = False
     saw_antibot_proxy = False
     saw_antibot_direct = False
-    need_proxy = False  # после UMG без proxy — не тратим время на ещё один direct
+    need_proxy = False
 
-    for attempt, profile in enumerate(attempts or ({},), start=1):
-        if need_proxy and not profile.get("use_proxy", True):
-            logger.info("yt-dlp skip direct profile after UMG: %s", profile)
+    for attempt, profile in enumerate(attempts, start=1):
+        used_proxy = bool(profile.get("use_proxy"))
+        proxy_url = str(profile.get("proxy_url") or "")
+        if used_proxy and proxy_url and proxy_url in _burned_proxies:
+            continue
+        if need_proxy and not used_proxy:
+            logger.info("yt-dlp skip direct after UMG")
             continue
         if attempt > 1:
             logger.info(
-                "yt-dlp retry %d/%d profile=%s", attempt, len(attempts), profile
+                "yt-dlp retry %d/%d clients=%s proxy=%s cookies=%s",
+                attempt,
+                len(attempts),
+                profile.get("player_clients"),
+                _proxy_host_hint(proxy_url) if used_proxy else "no",
+                profile.get("use_cookies"),
             )
         cmd = (
             _build_ytdlp_cmd(search, outtmpl, **profile)
@@ -3010,11 +3111,10 @@ async def _download_ytdlp_async(
         if result is not None:
             return result
         last_stderr = joined
-        low = (joined or "").lower()
-        used_proxy = bool(profile.get("use_proxy", True))
         if _ytdlp_antibot(joined):
             if used_proxy:
                 saw_antibot_proxy = True
+                _mark_proxy_antibot(proxy_url)
             else:
                 saw_antibot_direct = True
         elif _ytdlp_format_fail(joined):
@@ -3023,7 +3123,7 @@ async def _download_ytdlp_async(
             if not used_proxy:
                 saw_umg_direct = True
                 need_proxy = True
-            logger.warning("yt-dlp UMG/geo block — try next profile (proxy/android)")
+            logger.warning("yt-dlp UMG/geo block — try next profile")
         # подчистить обломки перед следующим профилем — меньше пик RAM
         for junk in tmp_dir.glob("*"):
             try:
@@ -3035,14 +3135,14 @@ async def _download_ytdlp_async(
             break
 
     joined = last_stderr
-    # UMG на IP сервера + antibot на proxy ≠ «обновите cookies»
     if saw_umg_direct and saw_antibot_proxy:
+        n = len(_all_download_proxies())
         raise DownloadError(
-            "UMG/гео с IP сервера, а через прокси — антибот. "
-            "Cookies с домашнего Wi‑Fi не работают на IP прокси. "
-            "Нужен residential proxy и cookies, экспортированные через тот же "
-            "прокси (браузер → YTMUSIC_PROXY → youtube.com → export → "
-            "YTDLP_COOKIES_B64). Либо смените YTMUSIC_PROXY на чистый residential."
+            "UMG с IP сервера + антибот на прокси. "
+            f"Сейчас прокси в пуле: {n}, сгоревших: {len(_burned_proxies)}. "
+            "Нужен другой residential IP (YTMUSIC_PROXY или YTMUSIC_PROXIES через запятую) "
+            "и cookies, экспортированные через ЭТОТ прокси "
+            "(браузер→тот же proxy→youtube.com→export)."
         )
     if _ytdlp_antibot(joined) and not saw_format_without_auth and not saw_umg_direct:
         if saw_antibot_direct and YTDLP_COOKIES_FILE and Path(YTDLP_COOKIES_FILE).is_file():
@@ -3054,7 +3154,8 @@ async def _download_ytdlp_async(
             else:
                 hint = (
                     "Cookies есть, но IP сервера/прокси в бане. "
-                    "Обновите cookies или смените YTMUSIC_PROXY (residential)."
+                    "Смените YTMUSIC_PROXY (residential) или добавьте запасные "
+                    "в YTMUSIC_PROXIES."
                 )
         elif YTDLP_COOKIES_FILE and Path(YTDLP_COOKIES_FILE).is_file():
             hint = (

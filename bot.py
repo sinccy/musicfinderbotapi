@@ -4412,7 +4412,12 @@ async def main() -> None:
     init_retention_db()
     import shutil
 
-    from config import YTMUSIC_PROXY, refresh_ytdlp_cookies, ytdlp_cookies_status
+    from config import (
+        YTMUSIC_PROXY,
+        YTMUSIC_PROXIES,
+        refresh_ytdlp_cookies,
+        ytdlp_cookies_status,
+    )
 
     refresh_ytdlp_cookies()
     ck = ytdlp_cookies_status()
@@ -4428,7 +4433,7 @@ async def main() -> None:
 
     deno_path = _deno_bin() or "none"
     logger.info(
-        "yt-dlp cookies=%s source=%s size=%s logged_in=%s b64_env=%s node=%s deno=%s ffmpeg=%s proxy=%s",
+        "yt-dlp cookies=%s source=%s size=%s logged_in=%s b64_env=%s node=%s deno=%s ffmpeg=%s proxy=%s pool=%d",
         ck["path"] or "none",
         ck["source"],
         ck["size"] or "-",
@@ -4438,6 +4443,7 @@ async def main() -> None:
         deno_path,
         shutil.which("ffmpeg") or "none",
         "yes" if YTMUSIC_PROXY else "no",
+        len(YTMUSIC_PROXIES or ()),
     )
     if ck["path"] and cookie_login == "no":
         logger.warning(
