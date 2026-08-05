@@ -1,5 +1,14 @@
 #!/usr/bin/env bash
-# Cookies для Bothost: youtube.com + accounts.google.com (проверено с US-proxy).
+# Cookies для Bothost: youtube.com + accounts.google.com.
+#
+# ВАЖНО для UMG/гео (Ken Carson и т.п.):
+# Cookies с домашнего Wi‑Fi НЕ работают через чужой YTMUSIC_PROXY
+# (YouTube: Sign in to confirm you're not a bot).
+# Экспортируй cookies ТОЛЬКО после входа в YouTube через ТОТ ЖЕ прокси:
+#   1) В браузере включи системный/extension proxy = YTMUSIC_PROXY
+#   2) Инкогнито → youtube.com → логин → robots.txt → Get cookies.txt LOCALLY
+#   3) ./export_yt_cookies.sh ~/Downloads/cookies.txt
+#
 # Использование:
 #   ./export_yt_cookies.sh
 #   ./export_yt_cookies.sh ~/Downloads/yt_cookies_full.txt

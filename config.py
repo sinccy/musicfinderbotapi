@@ -257,6 +257,12 @@ YTMUSIC_LOCATION = (_get("YTMUSIC_LOCATION", "US") or "US").upper()
 YTMUSIC_LANGUAGE = _get("YTMUSIC_LANGUAGE", "en") or "en"
 YTMUSIC_PROXY = _get("YTMUSIC_PROXY") or _get("YTM_PROXY")
 
+# Свой Cobalt instance (публичные api.cobalt.tools требуют JWT)
+COBALT_API_URL = (_get("COBALT_API_URL") or "").rstrip("/") + (
+    "/" if _get("COBALT_API_URL") else ""
+)
+COBALT_API_KEY = _get("COBALT_API_KEY") or _get("COBALT_JWT")
+
 # Пагинация альбомов / синглов (6–7 на страницу)
 ALBUMS_PER_PAGE = 7
 CHART_PER_PAGE = 10

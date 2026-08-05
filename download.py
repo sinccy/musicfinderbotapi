@@ -34,6 +34,8 @@ from config import (
     DOWNLOAD_CONCURRENCY,
     DOWNLOAD_TIMEOUT,
     MAX_AUDIO_BYTES,
+    COBALT_API_KEY,
+    COBALT_API_URL,
     YTDLP_COOKIES_FILE,
     YTDLP_COOKIES_FROM_BROWSER,
     YTDLP_PROXY,
@@ -188,32 +190,50 @@ def _yt_video_status_sync(video_id: str) -> str:
     """
     ok | blocked | unknown
     unknown = bot-check / сеть (скачивание через android+proxy часто всё равно работает).
+
+    Не ходим сразу через YTMUSIC_PROXY: cookies с домашнего IP + чужой proxy IP
+    почти всегда дают antibot, и трек ошибочно помечается blocked/unknown.
     """
     import yt_dlp  # type: ignore
 
-    opts: dict[str, Any] = {
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    base: dict[str, Any] = {
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
         "socket_timeout": 20,
         "http_headers": {"User-Agent": UA},
-        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+        "extractor_args": {"youtube": {"player_client": ["android", "ios", "web"]}},
     }
     if YTDLP_COOKIES_FILE and Path(YTDLP_COOKIES_FILE).is_file():
-        opts["cookiefile"] = YTDLP_COOKIES_FILE
+        base["cookiefile"] = YTDLP_COOKIES_FILE
+
+    attempts: list[dict[str, Any]] = [dict(base)]
     proxy = (YTMUSIC_PROXY or "").strip()
-    if proxy:
-        opts["proxy"] = proxy
-    url = f"https://www.youtube.com/watch?v={video_id}"
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-        return "ok" if info and (info.get("id") or info.get("title")) else "unknown"
-    except Exception as exc:  # noqa: BLE001
-        msg = str(exc)
-        if _yt_video_likely_blocked(msg):
-            return "blocked"
-        return "unknown"
+    if proxy and proxy.lower() not in {"none", "off", "0", "false"}:
+        # proxy без cookies — меньше antibot на DC IP
+        proxied = dict(base)
+        proxied.pop("cookiefile", None)
+        proxied["proxy"] = proxy
+        attempts.append(proxied)
+
+    last_msg = ""
+    for opts in attempts:
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+            if info and (info.get("id") or info.get("title")):
+                return "ok"
+        except Exception as exc:  # noqa: BLE001
+            last_msg = str(exc)
+            if _yt_video_likely_blocked(last_msg):
+                # UMG на NL IP — ещё пробуем proxy-попытку
+                if "claimed content" in last_msg.lower() or "blocked due to" in last_msg.lower():
+                    continue
+                return "blocked"
+    if last_msg and _yt_video_likely_blocked(last_msg):
+        return "blocked"
+    return "unknown"
 
 
 async def _yt_video_downloadable(video_id: str) -> bool:
@@ -2880,20 +2900,16 @@ def _ytdlp_retryable(joined_stderr: str) -> bool:
     )
 
 
-# Node≥22 + cookies. Proxy нужен для UMG; без proxy — для проверки EJS / non-UMG.
+# Порядок важен (логи Ken Carson / UMG):
+# • без proxy + cookies → антибот проходит, часто UMG/geo
+# • с proxy + cookies с домашнего IP → почти всегда «Sign in…»
+# • proxy + android БЕЗ cookies → обход antibot на DC/US proxy
 _YTDLP_PROFILES: tuple[dict[str, Any], ...] = (
     {
-        "player_clients": "web",
-        "audio_format": "18/bestaudio/best",
+        "player_clients": "android,ios,web",
+        "audio_format": "bestaudio/best/18",
         "extract_mp3": True,
-        "use_proxy": True,
-        "use_cookies": True,
-    },
-    {
-        "player_clients": "web_safari",
-        "audio_format": "18/93/92/91/bestaudio/best",
-        "extract_mp3": True,
-        "use_proxy": True,
+        "use_proxy": False,
         "use_cookies": True,
     },
     {
@@ -2904,13 +2920,45 @@ _YTDLP_PROFILES: tuple[dict[str, Any], ...] = (
         "use_cookies": True,
     },
     {
+        "player_clients": "android,ios",
+        "audio_format": "bestaudio/best/18",
+        "extract_mp3": True,
+        "use_proxy": True,
+        "use_cookies": False,
+    },
+    {
+        "player_clients": "android,web",
+        "audio_format": "bestaudio/best/18",
+        "extract_mp3": True,
+        "use_proxy": True,
+        "use_cookies": True,
+    },
+    {
         "player_clients": "web_safari,mweb",
-        "audio_format": "18/bestaudio/best",
+        "audio_format": "18/93/92/91/bestaudio/best",
         "extract_mp3": True,
         "use_proxy": True,
         "use_cookies": True,
     },
 )
+
+
+def _ytdlp_antibot(joined_stderr: str) -> bool:
+    return "sign in to confirm" in (joined_stderr or "").lower()
+
+
+def _ytdlp_format_fail(joined_stderr: str) -> bool:
+    low = (joined_stderr or "").lower()
+    return any(
+        s in low
+        for s in (
+            "format is not available",
+            "only images are available",
+            "nsig extraction failed",
+            "n challenge solving failed",
+            "signature extraction failed",
+        )
+    )
 
 
 async def _download_ytdlp_async(
@@ -2937,12 +2985,20 @@ async def _download_ytdlp_async(
     await set_pct(5)
 
     last_stderr = ""
-    # Cookies прошли антибот, но форматов нет (часто старый Node / EJS) —
-    # нельзя показывать «обновите cookies» из-за последнего cookieless-профиля.
     saw_format_without_auth = False
+    saw_umg_direct = False
+    saw_antibot_proxy = False
+    saw_antibot_direct = False
+    need_proxy = False  # после UMG без proxy — не тратим время на ещё один direct
+
     for attempt, profile in enumerate(attempts or ({},), start=1):
+        if need_proxy and not profile.get("use_proxy", True):
+            logger.info("yt-dlp skip direct profile after UMG: %s", profile)
+            continue
         if attempt > 1:
-            logger.info("yt-dlp retry %d/%d profile=%s", attempt, len(attempts), profile)
+            logger.info(
+                "yt-dlp retry %d/%d profile=%s", attempt, len(attempts), profile
+            )
         cmd = (
             _build_ytdlp_cmd(search, outtmpl, **profile)
             if profile
@@ -2955,14 +3011,19 @@ async def _download_ytdlp_async(
             return result
         last_stderr = joined
         low = (joined or "").lower()
-        if "sign in to confirm" not in low and (
-            "format is not available" in low
-            or "only images are available" in low
-            or _ytdlp_umg_blocked(joined)
-        ):
+        used_proxy = bool(profile.get("use_proxy", True))
+        if _ytdlp_antibot(joined):
+            if used_proxy:
+                saw_antibot_proxy = True
+            else:
+                saw_antibot_direct = True
+        elif _ytdlp_format_fail(joined):
             saw_format_without_auth = True
         if _ytdlp_umg_blocked(joined):
-            logger.warning("yt-dlp UMG/geo block — try next profile (proxy)")
+            if not used_proxy:
+                saw_umg_direct = True
+                need_proxy = True
+            logger.warning("yt-dlp UMG/geo block — try next profile (proxy/android)")
         # подчистить обломки перед следующим профилем — меньше пик RAM
         for junk in tmp_dir.glob("*"):
             try:
@@ -2970,31 +3031,50 @@ async def _download_ytdlp_async(
                     junk.unlink(missing_ok=True)
             except OSError:
                 pass
-        # На YouTube всегда гоняем все профили (proxy ↔ no-proxy / android ↔ web)
         if not is_yt:
             break
 
     joined = last_stderr
-    if "sign in to confirm" in joined.lower() and not saw_format_without_auth:
-        if YTDLP_COOKIES_FILE and Path(YTDLP_COOKIES_FILE).is_file():
-            hint = "Cookies заданы, но YouTube всё равно блокирует — обновите cookies.txt."
+    # UMG на IP сервера + antibot на proxy ≠ «обновите cookies»
+    if saw_umg_direct and saw_antibot_proxy:
+        raise DownloadError(
+            "UMG/гео с IP сервера, а через прокси — антибот. "
+            "Cookies с домашнего Wi‑Fi не работают на IP прокси. "
+            "Нужен residential proxy и cookies, экспортированные через тот же "
+            "прокси (браузер → YTMUSIC_PROXY → youtube.com → export → "
+            "YTDLP_COOKIES_B64). Либо смените YTMUSIC_PROXY на чистый residential."
+        )
+    if _ytdlp_antibot(joined) and not saw_format_without_auth and not saw_umg_direct:
+        if saw_antibot_direct and YTDLP_COOKIES_FILE and Path(YTDLP_COOKIES_FILE).is_file():
+            if not _cookies_look_logged_in(YTDLP_COOKIES_FILE):
+                hint = (
+                    "cookies.txt неполные (нет LOGIN_INFO/SID) — "
+                    "экспорт из залогиненной сессии youtube.com."
+                )
+            else:
+                hint = (
+                    "Cookies есть, но IP сервера/прокси в бане. "
+                    "Обновите cookies или смените YTMUSIC_PROXY (residential)."
+                )
+        elif YTDLP_COOKIES_FILE and Path(YTDLP_COOKIES_FILE).is_file():
+            hint = (
+                "Cookies заданы, но YouTube всё равно блокирует — "
+                "обновите cookies.txt или смените прокси."
+            )
         elif YTDLP_COOKIES_FROM_BROWSER:
             hint = (
                 "YTDLP_COOKIES_FROM_BROWSER работает только на Mac с браузером. "
-                "На сервере: экспортируйте cookies.txt и задайте "
-                "YTDLP_COOKIES_FILE=/app/cookies.txt или YTDLP_COOKIES_B64."
+                "На сервере: YTDLP_COOKIES_FILE или YTDLP_COOKIES_B64."
             )
         else:
             hint = (
-                "На сервере задайте YTDLP_COOKIES_B64 в env (base64 cookies.txt) "
-                "или загрузите cookies.txt в /app/data/cookies.txt. "
-                "Проверьте логи при старте: yt-dlp cookies=… "
-                "На Mac: YTDLP_COOKIES_FROM_BROWSER=chrome."
+                "Задайте YTDLP_COOKIES_B64 или /app/data/cookies.txt. "
+                "Проверьте логи старта: yt-dlp cookies=…"
             )
         raise DownloadError(f"YouTube требует вход (антибот). {hint}")
     if saw_format_without_auth:
         logger.warning(
-            "yt-dlp: cookies ok but no usable formats (EJS/node broken?). last=%s",
+            "yt-dlp: auth ok but no usable formats (EJS/node?). last=%s",
             joined[-500:],
         )
         if "n challenge" in joined.lower() or "only images" in joined.lower():
@@ -3186,12 +3266,19 @@ def _finalize_file(path: Path, query: str, tmp_dir: Path) -> DownloadedAudio:
     )
 
 
-_COBALT_APIS = (
+_COBALT_APIS_DEFAULT = (
     "https://api.cobalt.tools/",
     "https://cobalt-api.kwiatekmiki.com/",
-    "https://co.wuk.sh/",
-    "https://cobalt.api.timelessnesses.me/",
 )
+
+
+def _cobalt_apis() -> tuple[str, ...]:
+    custom = (COBALT_API_URL or "").strip()
+    if custom:
+        if not custom.endswith("/"):
+            custom += "/"
+        return (custom,) + _COBALT_APIS_DEFAULT
+    return _COBALT_APIS_DEFAULT
 
 
 async def _cobalt_download_url(watch_url: str) -> str:
@@ -3208,7 +3295,13 @@ async def _cobalt_download_url(watch_url: str) -> str:
         "Content-Type": "application/json",
         "User-Agent": UA,
     }
-    for api in _COBALT_APIS:
+    if COBALT_API_KEY:
+        # JWT (eyJ…) → Bearer; иначе Api-Key (self-hosted cobalt)
+        if COBALT_API_KEY.lower().startswith("eyj"):
+            headers["Authorization"] = f"Bearer {COBALT_API_KEY}"
+        else:
+            headers["Authorization"] = f"Api-Key {COBALT_API_KEY}"
+    for api in _cobalt_apis():
         try:
             async with session.post(
                 api,
