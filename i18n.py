@@ -33,16 +33,14 @@ _STRINGS: dict[str, dict[str, str]] = {
             "Просто пришлите в чат:\n"
             "• <b>название</b> артиста, альбома или трека\n"
             "• <b>ссылку</b> (Apple, Spotify, YouTube, Genius…)\n\n"
-            "Кнопки меню — по желанию, искать можно сразу без них.\n"
-            "<i>🖼 Поиск по обложке — пока в разработке.</i>"
+            "Кнопки меню — по желанию, искать можно сразу без них."
         ),
         "en": (
             "🎧 <b>PROJECT COVER</b>\n\n"
             "Just send in the chat:\n"
             "• an artist, album, or <b>track name</b>\n"
             "• a <b>link</b> (Apple, Spotify, YouTube, Genius…)\n\n"
-            "Menu buttons are optional — you can search right away.\n"
-            "<i>🖼 Cover search is under development.</i>"
+            "Menu buttons are optional — you can search right away."
         ),
     },
     "menu_prompt": {
@@ -98,7 +96,6 @@ _STRINGS: dict[str, dict[str, str]] = {
             "/top — топ чарт Genius\n"
             "/newreleases — недельные релизы\n\n"
             "Режимы: название, ссылка, топ, релизы.\n"
-            "🖼 Поиск по обложке — пока в разработке.\n"
             "После альбома — ссылки на платформы и ⬇ MP3 "
             "(выбор трека или ZIP).\n"
             "✨ Рекомендации — подборки по недавно скачанным трекам.\n\n"
@@ -110,7 +107,6 @@ _STRINGS: dict[str, dict[str, str]] = {
             "/top — Genius top chart\n"
             "/newreleases — weekly releases\n\n"
             "Modes: title, link, top, releases.\n"
-            "🖼 Cover search is under development.\n"
             "After an album — platform links and ⬇ MP3 "
             "(pick a track or ZIP).\n"
             "✨ Recommendations — based on your recent downloads.\n\n"

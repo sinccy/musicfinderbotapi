@@ -3064,9 +3064,9 @@ async def on_message(message: Message, bot: Bot, state: FSMContext) -> None:
         and (message.document.mime_type or "").startswith("image/")
     ):
         await message.answer(
-            "🖼 <b>Поиск по обложке</b> пока в разработке.\n"
-            "Пришлите <b>название</b> или <b>ссылку</b> — так поиск работает сейчас.",
-            reply_markup=main_menu_kb(),
+            "Пришлите <b>название</b> трека/альбома или <b>ссылку</b> — "
+            "поиск по фото сейчас недоступен.",
+            reply_markup=main_menu_kb(lang),
         )
         return
 
@@ -3275,9 +3275,11 @@ async def on_callback(callback: CallbackQuery, bot: Bot, state: FSMContext) -> N
                 edit=True,
             )
         elif mode == "cover":
+            # кнопка убрана; старые callback просто ведём в текстовый поиск
+            await set_mode_fsm(state, "text")
             await ui_show(
                 msg,
-                t("mode_cover", lang),
+                t("mode_text", lang),
                 reply_markup=back_to_menu_kb(),
                 edit=True,
             )
@@ -3949,10 +3951,11 @@ async def on_callback(callback: CallbackQuery, bot: Bot, state: FSMContext) -> N
                 # найти трек в сессиях (singles бывает смесь TrackCandidate + AlbumCandidate)
                 track: Optional[TrackCandidate] = None
                 for sess in _album_sessions.values():
-                    for t in sess.get("singles") or []:
-                        tid = str(getattr(t, "track_id", "") or "").strip()
+                    # нельзя for t — затирает i18n.t на весь on_callback
+                    for item in sess.get("singles") or []:
+                        tid = str(getattr(item, "track_id", "") or "").strip()
                         if tid and tid == track_id:
-                            track = t  # type: ignore[assignment]
+                            track = item  # type: ignore[assignment]
                             break
                     if track:
                         break

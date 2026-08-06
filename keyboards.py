@@ -266,12 +266,6 @@ def main_menu_kb(lang: str = DEFAULT_LANG) -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    text=t("menu_cover_search", lang_n),
-                    callback_data="mode:cover",
-                )
-            ],
-            [
-                InlineKeyboardButton(
                     text=t("menu_tops", lang_n),
                     callback_data="mode:tops",
                 )
